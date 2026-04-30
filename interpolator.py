@@ -43,8 +43,20 @@ def interpolate(
     Returns:
         HeatmapData with the interpolated 2D grid.
     """
-    if len(points) < 2:
-        raise ValueError("Need at least 2 measurement points to interpolate.")
+    # Minimum points required per method:
+    #   linear  needs 3+ non-collinear points (Qhull triangulation)
+    #   cubic   needs 4+ non-collinear points
+    #   rbf     needs 3+ points (no triangulation — always safe)
+    # We use 4 as the universal safe floor since collinearity can still
+    # trip up linear with exactly 3 points. Below 4, we use nearest-neighbor
+    # which simply paints each pixel with the closest measured value.
+    MIN_POINTS_FOR_INTERPOLATION = 4
+
+    if len(points) < MIN_POINTS_FOR_INTERPOLATION:
+        raise ValueError(
+            f"Need at least {MIN_POINTS_FOR_INTERPOLATION} measurement points to interpolate "
+            f"(have {len(points)})."
+        )
 
     pts = np.array(points, dtype=float)
     vals = np.array(values, dtype=float)
@@ -56,7 +68,7 @@ def interpolate(
         elif len(points) >= 4:
             method = "cubic"
         else:
-            method = "linear"
+            method = "linear"  # only reached if caller forces method="auto" is bypassed
 
     # Build output grid
     gx = np.linspace(0, width, resolution)
