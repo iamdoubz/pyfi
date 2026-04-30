@@ -76,8 +76,9 @@ def render_heatmap(
         _draw_grid_background(ax, w, h)
 
     heatmap_data = None
+    MIN_POINTS = 4  # must match interpolator.MIN_POINTS_FOR_INTERPOLATION
 
-    if len(points) >= 2:
+    if len(points) >= MIN_POINTS:
         # ── Interpolate & draw heatmap ─────────────────────────────────────
         heatmap_data = interpolate(points, values, w, h)
         img_heatmap = ax.imshow(
@@ -96,16 +97,32 @@ def render_heatmap(
             cbar = fig.colorbar(img_heatmap, ax=ax, fraction=0.03, pad=0.02)
             cbar.set_label("Signal Strength (dBm)", fontsize=10)
             cbar.ax.tick_params(labelsize=8)
-            # Add quality labels
             cbar.ax.text(1.4, -90, "Poor", transform=cbar.ax.get_yaxis_transform(),
                          fontsize=7, color='gray', va='bottom')
             cbar.ax.text(1.4, -30, "Excellent", transform=cbar.ax.get_yaxis_transform(),
                          fontsize=7, color='gray', va='top')
     else:
-        ax.text(w / 2, h / 2,
-                f"Not enough data for '{ssid}'\n({len(points)} point{'s' if len(points) != 1 else ''} collected — need at least 2)",
-                ha='center', va='center', fontsize=13, color='#aaaaaa',
-                bbox=dict(boxstyle='round,pad=0.5', facecolor='#1a1a2e', alpha=0.7))
+        # ── Not enough points yet — show progress indicator ────────────────
+        collected = len(points)
+        remaining = MIN_POINTS - collected
+
+        # Progress bar drawn as text blocks
+        filled = "█" * collected
+        empty  = "░" * remaining
+        bar    = f"[{filled}{empty}]  {collected}/{MIN_POINTS}"
+
+        msg = (
+            f"Collecting data for '{ssid}'\n\n"
+            f"{bar}\n\n"
+            f"Add {remaining} more point{'s' if remaining != 1 else ''} to generate the heatmap.\n"
+            f"Measurement dots are shown below."
+        )
+        ax.text(w / 2, h / 2, msg,
+                ha='center', va='center', fontsize=12,
+                color='#8888bb', linespacing=1.9,
+                fontfamily='monospace',
+                bbox=dict(boxstyle='round,pad=0.8', facecolor='#10101e', alpha=0.8),
+                zorder=3)
 
     # ── Draw measurement points ───────────────────────────────────────────────
     if show_points and points:
