@@ -31,7 +31,7 @@ SIGNAL_CMAP = mcolors.LinearSegmentedColormap.from_list("wifi_signal", SIGNAL_CO
 
 def render_heatmap(
     session: Session,
-    bssid: str,
+    bssids: list[str],
     fig: Optional[Figure] = None,
     ax: Optional[Axes] = None,
     alpha: float = 0.65,
@@ -40,11 +40,13 @@ def render_heatmap(
     export_path: Optional[str] = None,
 ) -> tuple[Figure, Axes, Optional[HeatmapData]]:
     """
-    Render a heatmap for a specific BSSID onto a matplotlib figure.
+    Render a heatmap for one or more BSSIDs onto a matplotlib figure.
 
     Args:
         session:        The data session with measurements.
-        bssid:          The BSSID to visualize.
+        bssids:         List of BSSIDs to visualize. If more than one, signal
+                        values are averaged per measurement point (only BSSIDs
+                        actually visible at each point contribute to the average).
         fig/ax:         Existing figure/axes to draw onto (creates new if None).
         alpha:          Transparency of the heatmap overlay.
         show_points:    Whether to draw measurement dot markers.
@@ -54,14 +56,26 @@ def render_heatmap(
     Returns:
         (figure, axes, heatmap_data)
     """
+    if not bssids:
+        raise ValueError("At least one BSSID must be provided.")
+
     if fig is None or ax is None:
         fig, ax = plt.subplots(figsize=(10, 7))
 
     ax.clear()
 
-    points, values = session.get_points_and_values(bssid)
-    ssid = session.get_ssid(bssid)
+    points, values = session.get_points_and_values_multi(bssids)
     w, h = session.canvas_width, session.canvas_height
+
+    # Build a human-readable label for the title
+    if len(bssids) == 1:
+        ssid = session.get_ssid(bssids[0])
+        ap_label = f"{ssid}  •  {bssids[0]}"
+    else:
+        # Show the shared SSID if all BSSIDs share one, otherwise list count
+        ssids = list({session.get_ssid(b) for b in bssids})
+        ssid  = ssids[0] if len(ssids) == 1 else f"{len(ssids)} networks"
+        ap_label = f"{ssid}  •  {len(bssids)} BSSIDs averaged"
 
     # ── Draw background ───────────────────────────────────────────────────────
     if session.floorplan_path:
@@ -105,14 +119,12 @@ def render_heatmap(
         # ── Not enough points yet — show progress indicator ────────────────
         collected = len(points)
         remaining = MIN_POINTS - collected
-
-        # Progress bar drawn as text blocks
         filled = "█" * collected
         empty  = "░" * remaining
         bar    = f"[{filled}{empty}]  {collected}/{MIN_POINTS}"
 
         msg = (
-            f"Collecting data for '{ssid}'\n\n"
+            f"Collecting data\n\n"
             f"{bar}\n\n"
             f"Add {remaining} more point{'s' if remaining != 1 else ''} to generate the heatmap.\n"
             f"Measurement dots are shown below."
@@ -126,19 +138,20 @@ def render_heatmap(
 
     # ── Draw measurement points ───────────────────────────────────────────────
     if show_points and points:
-        for i, ((px, py), dbm) in enumerate(zip(points, values)):
+        for (px, py), dbm in zip(points, values):
             color = SIGNAL_CMAP((dbm + 90) / 60)
             circle = Circle((px, py), radius=max(w, h) * 0.012,
                             facecolor=color, edgecolor='white',
                             linewidth=1.5, zorder=5, alpha=0.95)
             ax.add_patch(circle)
-            ax.text(px, py - max(w, h) * 0.022, f"{dbm}",
+            ax.text(px, py - max(w, h) * 0.022, f"{int(round(dbm))}",
                     ha='center', va='bottom', fontsize=7, color='white',
                     fontweight='bold', zorder=6)
 
     # ── Labels & styling ──────────────────────────────────────────────────────
-    ap_label = f"{ssid}  •  {bssid}"
     point_note = f"{len(points)} measurement{'s' if len(points) != 1 else ''}"
+    if len(bssids) > 1:
+        point_note += f"  •  avg of {len(bssids)} BSSIDs"
     if not session.floorplan_path:
         point_note += "  ⚠ No floorplan — adding one increases accuracy"
 
@@ -169,7 +182,6 @@ def _draw_grid_background(ax: Axes, w: int, h: int):
     for y in range(0, h + 1, grid_spacing):
         ax.axhline(y, color='#1e2a4a', linewidth=0.6, zorder=0)
 
-    # Label grid coordinates lightly
     for x in range(0, w + 1, grid_spacing * 2):
         ax.text(x, h - 4, str(x), ha='center', va='bottom',
                 fontsize=6, color='#2a3a5a')
