@@ -80,10 +80,10 @@ class WiFiHeatmapApp:
 
         self.session: Session = Session()
         self.session_path: Optional[str] = None
-        self.selected_bssid: Optional[str] = None   # active on heatmap tab
         self.scanning = False
         self.last_scan: list[AccessPoint] = []
-        self.selected_bssids: set[str] = set()       # checked on AP tab
+        self.selected_bssids: set[str] = set()        # checked on AP tab
+        self.selected_bssids_for_heatmap: list[str] = []  # ordered list for rendering
 
         self._build_ui()
         self._apply_styles()
@@ -357,19 +357,32 @@ class WiFiHeatmapApp:
             self.selected_bssids.add(bssid)
         else:
             self.selected_bssids.discard(bssid)
+        self._sync_heatmap_bssids()
         self._update_heatmap_ap_selector()
 
     def _ap_select_all(self):
         self.selected_bssids = {ap.bssid for ap in self.last_scan}
         for row in self._ap_row_widgets:
             row["check_var"].set(True)
+        self._sync_heatmap_bssids()
         self._update_heatmap_ap_selector()
 
     def _ap_deselect_all(self):
         self.selected_bssids.clear()
         for row in self._ap_row_widgets:
             row["check_var"].set(False)
+        self._sync_heatmap_bssids()
         self._update_heatmap_ap_selector()
+
+    def _sync_heatmap_bssids(self):
+        """Keep selected_bssids_for_heatmap in sync with the AP tab checkboxes.
+        Preserves a stable order: scan order first, then session-only BSSIDs."""
+        ordered = [ap.bssid for ap in self.last_scan if ap.bssid in self.selected_bssids]
+        scan_set = {ap.bssid for ap in self.last_scan}
+        for bssid in self.session.get_all_bssids():
+            if bssid in self.selected_bssids and bssid not in scan_set:
+                ordered.append(bssid)
+        self.selected_bssids_for_heatmap = ordered
 
     # ── Heatmap Tab ───────────────────────────────────────────────────────────
 
@@ -424,40 +437,58 @@ class WiFiHeatmapApp:
         self._pending_scan: Optional[list[AccessPoint]] = None
 
     def _build_heatmap_right(self, f: tk.Frame):
-        # ── Active AP selector ────────────────────────────────────────────────
-        tk.Label(f, text="ACTIVE ACCESS POINT", font=("Courier", 8, "bold"),
+        # ── Active AP display ─────────────────────────────────────────────────
+        tk.Label(f, text="ACTIVE NETWORKS", font=("Courier", 8, "bold"),
                  bg=BG2, fg=TEXT_DIM).grid(row=0, column=0, sticky="w", padx=14, pady=(14, 2))
 
-        ap_note = tk.Label(f,
-            text="Select networks on the Access Points tab\nto make them available here.",
-            font=("Courier", 7), bg=BG2, fg=TEXT_DIM, justify="left", wraplength=230)
-        ap_note.grid(row=1, column=0, sticky="w", padx=14, pady=(0, 6))
+        tk.Label(f,
+            text="Check networks on the Access\nPoints tab to include them here.\n"
+                 "1 selected = single BSSID mode.\n"
+                 "2+ selected = averaged mode.",
+            font=("Courier", 7), bg=BG2, fg=TEXT_DIM, justify="left", wraplength=230
+        ).grid(row=1, column=0, sticky="w", padx=14, pady=(0, 6))
 
-        ap_combo_frame = tk.Frame(f, bg=BG2)
-        ap_combo_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
-        ap_combo_frame.columnconfigure(0, weight=1)
+        # Scrollable list showing the currently active BSSIDs
+        active_frame = tk.Frame(f, bg=BG3, relief="flat",
+                                highlightthickness=1,
+                                highlightbackground=BORDER)
+        active_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 4))
+        active_frame.columnconfigure(0, weight=1)
 
-        self.heatmap_ap_var = tk.StringVar()
-        self.heatmap_ap_combo = ttk.Combobox(ap_combo_frame,
-            textvariable=self.heatmap_ap_var,
-            font=("Courier", 8), state="readonly", width=28)
-        self.heatmap_ap_combo.grid(row=0, column=0, sticky="ew")
-        self.heatmap_ap_combo.bind("<<ComboboxSelected>>", self._on_heatmap_ap_select)
+        active_scroll = ttk.Scrollbar(active_frame, orient="vertical")
+        active_scroll.grid(row=0, column=1, sticky="ns")
 
-        ttk.Separator(f, orient="horizontal").grid(row=99, column=0, sticky="ew", padx=8, pady=6)
+        self.active_bssid_listbox = tk.Listbox(
+            active_frame,
+            font=("Courier", 7), bg=BG3, fg=ACCENT2,
+            relief="flat", borderwidth=0,
+            highlightthickness=0,
+            activestyle="none", height=5,
+            selectbackground=BG3, selectforeground=ACCENT2,
+            yscrollcommand=active_scroll.set)
+        self.active_bssid_listbox.grid(row=0, column=0, sticky="ew")
+        active_scroll.config(command=self.active_bssid_listbox.yview)
+
+        self.heatmap_mode_label = tk.Label(f, text="",
+            font=("Courier", 7, "bold"), bg=BG2, fg=WARNING,
+            wraplength=230, justify="left")
+        self.heatmap_mode_label.grid(row=3, column=0, sticky="w", padx=14, pady=(2, 4))
+
+        ttk.Separator(f, orient="horizontal").grid(row=4, column=0, sticky="ew", padx=8, pady=6)
 
         # ── Measurements list (full remaining height) ──────────────────────
         tk.Label(f, text="MEASUREMENTS", font=("Courier", 8, "bold"),
-                 bg=BG2, fg=TEXT_DIM).grid(row=100, column=0, sticky="w", padx=14, pady=(4, 2))
+                 bg=BG2, fg=TEXT_DIM).grid(row=5, column=0, sticky="w", padx=14, pady=(4, 2))
 
         self.meas_count_label = tk.Label(f, text="0 points collected",
             font=("Courier", 8), bg=BG2, fg=ACCENT2)
-        self.meas_count_label.grid(row=101, column=0, sticky="w", padx=14, pady=(0, 4))
+        self.meas_count_label.grid(row=6, column=0, sticky="w", padx=14, pady=(0, 4))
 
         meas_frame = tk.Frame(f, bg=BG2)
-        meas_frame.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 4))
+        meas_frame.grid(row=7, column=0, sticky="nsew", padx=8, pady=(0, 4))
         meas_frame.columnconfigure(0, weight=1)
         meas_frame.rowconfigure(0, weight=1)
+        f.rowconfigure(7, weight=1)
 
         meas_scroll = ttk.Scrollbar(meas_frame, orient="vertical")
         meas_scroll.grid(row=0, column=1, sticky="ns")
@@ -476,44 +507,34 @@ class WiFiHeatmapApp:
             font=("Courier", 8), bg=BG3, fg=DANGER,
             relief="flat", padx=8, pady=4, cursor="hand2",
             command=self._delete_measurement)
-        self.del_meas_btn.grid(row=4, column=0, sticky="w", padx=12, pady=(0, 10))
+        self.del_meas_btn.grid(row=8, column=0, sticky="w", padx=12, pady=(0, 10))
 
-    # ── AP selector on Heatmap tab ────────────────────────────────────────────
+    # ── Active BSSID display on Heatmap tab ───────────────────────────────────
 
     def _update_heatmap_ap_selector(self):
-        """Rebuild the combobox from currently selected BSSIDs."""
-        entries = []
-        for ap in self.last_scan:
-            if ap.bssid in self.selected_bssids:
-                entries.append(f"{ap.ssid}  [{ap.bssid}]")
+        """Reflect the current AP tab selection in the Heatmap tab status panel."""
+        self._sync_heatmap_bssids()
+        bssids = self.selected_bssids_for_heatmap
 
-        # Also include session BSSIDs not in last scan
-        scan_bssids = {ap.bssid for ap in self.last_scan}
-        for bssid in self.session.get_all_bssids():
-            if bssid in self.selected_bssids and bssid not in scan_bssids:
-                ssid = self.session.get_ssid(bssid)
-                entries.append(f"{ssid}  [{bssid}]")
+        self.active_bssid_listbox.delete(0, tk.END)
 
-        self.heatmap_ap_combo["values"] = entries
-
-        if not entries:
-            self.heatmap_ap_combo.set("— No APs selected (go to Access Points tab) —")
-            self.selected_bssid = None
+        if not bssids:
+            self.active_bssid_listbox.insert(tk.END, "  — none selected —")
+            self.heatmap_mode_label.config(
+                text="⚠ No networks selected.\nGo to Access Points tab and\ncheck at least one.",
+                fg=DANGER)
         else:
-            # Keep current selection if still available
-            current = self.heatmap_ap_var.get()
-            if current not in entries:
-                self.heatmap_ap_combo.current(0)
-                self._on_heatmap_ap_select(None)
+            for bssid in bssids:
+                ssid = self.session.get_ssid(bssid)
+                self.active_bssid_listbox.insert(tk.END, f"  {ssid}  {bssid}")
+            if len(bssids) == 1:
+                self.heatmap_mode_label.config(
+                    text=f"Mode: single BSSID", fg=ACCENT2)
             else:
-                self.heatmap_ap_combo.set(current)
+                self.heatmap_mode_label.config(
+                    text=f"Mode: averaging {len(bssids)} BSSIDs", fg=WARNING)
 
-    def _on_heatmap_ap_select(self, event):
-        val = self.heatmap_ap_var.get()
-        m = __import__("re").search(r'\[([0-9A-Fa-f:]{17})\]', val)
-        if m:
-            self.selected_bssid = m.group(1).upper()
-            self._redraw()
+        self._redraw()
 
     # ── Scanning (AP Tab) ─────────────────────────────────────────────────────
 
@@ -542,6 +563,7 @@ class WiFiHeatmapApp:
         if not self.selected_bssids:
             self.selected_bssids = {ap.bssid for ap in aps}
         self._populate_ap_table(aps)
+        self._sync_heatmap_bssids()
         self._update_heatmap_ap_selector()
         self._set_status(f"Scan complete — {len(aps)} networks found")
 
@@ -559,7 +581,7 @@ class WiFiHeatmapApp:
 
     def _begin_placement_mode(self):
         if self.scanning: return
-        if not self.selected_bssids:
+        if not self.selected_bssids_for_heatmap:
             messagebox.showinfo("No APs Selected",
                 "Please select at least one access point\non the Access Points tab first.")
             self.notebook.select(self.ap_tab)
@@ -626,9 +648,9 @@ class WiFiHeatmapApp:
     # ── Rendering ─────────────────────────────────────────────────────────────
 
     def _redraw(self):
-        if self.selected_bssid:
+        if self.selected_bssids_for_heatmap:
             try:
-                render_heatmap(self.session, self.selected_bssid, self.fig, self.ax)
+                render_heatmap(self.session, self.selected_bssids_for_heatmap, self.fig, self.ax)
             except Exception as e:
                 self.ax.clear()
                 self.ax.text(0.5, 0.5, f"Render error:\n{e}",
@@ -659,10 +681,14 @@ class WiFiHeatmapApp:
             for y in range(0, h + 1, spacing):
                 self.ax.axhline(y, color="#1e2a4a", linewidth=0.5)
 
-        if not self.selected_bssids:
+        if not self.selected_bssids_for_heatmap:
             msg = "← Select networks on the\nAccess Points tab first"
         else:
-            msg = "Select a network in the\ndropdown above, then\nclick  ▶ Scan & Place"
+            n = len(self.selected_bssids_for_heatmap)
+            msg = (f"{n} BSSID{'s' if n > 1 else ''} selected.\n"
+                   f"Click  ▶ Scan & Place  to begin.")
+            if n > 1:
+                msg = f"Averaging {n} BSSIDs.\n" + msg
         if not self.session.floorplan_path:
             msg += "\n\n⚠ No floorplan — adding one\nincreases accuracy."
 
@@ -679,7 +705,7 @@ class WiFiHeatmapApp:
             if not messagebox.askyesno("New Session", "Discard current session?"): return
         self.session = Session(name="New Session")
         self.session_path = None
-        self.selected_bssid = None
+        self.selected_bssids_for_heatmap = []
         self._refresh_everything()
         self._set_status("New session started")
 
@@ -736,14 +762,14 @@ class WiFiHeatmapApp:
             self.floorplan_note.config(text="⚠ Adding a floorplan\nincreases accuracy.")
 
     def _export_png(self):
-        if not self.selected_bssid:
-            messagebox.showinfo("Export", "Select an access point first."); return
+        if not self.selected_bssids_for_heatmap:
+            messagebox.showinfo("Export", "Select at least one access point first."); return
         path = filedialog.asksaveasfilename(title="Export Heatmap",
             defaultextension=".png",
             filetypes=[("PNG Image", "*.png"), ("JPEG Image", "*.jpg")])
         if path:
             try:
-                render_heatmap(self.session, self.selected_bssid, export_path=path)
+                render_heatmap(self.session, self.selected_bssids_for_heatmap, export_path=path)
                 self._set_status(f"Exported: {os.path.basename(path)}")
                 messagebox.showinfo("Export", f"Saved to:\n{path}")
             except Exception as e:
