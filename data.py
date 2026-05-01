@@ -71,6 +71,29 @@ class Session:
                 values.append(m.signals[bssid])
         return points, values
 
+    def get_points_and_values_multi(self, bssids: list[str]) -> tuple[list, list]:
+        """
+        Extract (x,y) points and averaged dBm values across multiple BSSIDs.
+
+        For each measurement point, only the BSSIDs that were actually visible
+        at that location are included in the average — a BSSID that was out of
+        range at a particular point is excluded rather than dragging the average
+        down with a floor value. Points where none of the requested BSSIDs were
+        seen at all are skipped entirely.
+
+        When a single BSSID is passed this is identical to get_points_and_values().
+        """
+        if len(bssids) == 1:
+            return self.get_points_and_values(bssids[0])
+
+        points, values = [], []
+        for m in self.measurements:
+            readings = [m.signals[b] for b in bssids if b in m.signals]
+            if readings:
+                points.append((m.x, m.y))
+                values.append(sum(readings) / len(readings))
+        return points, values
+
     def save(self, path: str):
         """Save session to JSON file."""
         data = {
