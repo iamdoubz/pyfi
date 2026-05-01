@@ -1,4 +1,8 @@
-# 📡 WiFi Heatmap Generator
+<p align="center">
+  <img src="extras/pyfi-social.png" alt="An image of a cartoon python snake tongue out, fangs showing, spewing venomous wifi signals">
+</p>
+
+# 📡 pyFi
 
 A cross-platform desktop application for collecting and visualizing WiFi signal
 strength across a physical space. Supports Windows, Linux, and macOS. Works
