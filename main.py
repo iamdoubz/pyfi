@@ -15,6 +15,8 @@ from tkinter import ttk, filedialog, messagebox
 import threading
 import os
 import argparse
+import time
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -55,19 +57,52 @@ def _sig_color(dbm: int) -> str:
     return SIG_RED
 
 
+@dataclass
+class _ApStats:
+    """Running statistics accumulated across all auto-scans for one BSSID."""
+    last_seen_ts: float = 0.0    # time.monotonic() of last sighting
+    max_dbm: int = -999
+    min_dbm: int = 0
+    total_dbm: int = 0
+    count: int = 0
+
+    def update(self, dbm: int):
+        self.last_seen_ts = time.monotonic()
+        self.max_dbm  = max(self.max_dbm, dbm)
+        self.min_dbm  = min(self.min_dbm, dbm) if self.count > 0 else dbm
+        self.total_dbm += dbm
+        self.count += 1
+
+    @property
+    def avg_dbm(self) -> int:
+        return self.total_dbm // self.count if self.count else 0
+
+    def last_seen_str(self, now: float) -> str:
+        if self.last_seen_ts == 0:
+            return "—"
+        secs = int(now - self.last_seen_ts)
+        if secs < 60:   return f"{secs}s ago"
+        if secs < 3600: return f"{secs // 60}m ago"
+        return f"{secs // 3600}h ago"
+
+
 # ── AP Table columns ──────────────────────────────────────────────────────────
 AP_COLUMNS = [
-    ("sel",     "✓",           38),
-    ("ssid",    "SSID",       160),
-    ("bssid",   "BSSID",      145),
-    ("channel", "Ch",          38),
-    ("freq",    "Frequency",   90),
-    ("width",   "Ch Width",    75),
-    ("band",    "Band",        60),
-    ("security","Security",   160),
-    ("vendor",  "Vendor",      90),
-    ("mode",    "Mode",        90),
-    ("level",   "Level",      110),
+    ("sel",       "✓",          38),
+    ("ssid",      "SSID",      160),
+    ("bssid",     "BSSID",     145),
+    ("channel",   "Ch",         38),
+    ("freq",      "Frequency",  90),
+    ("width",     "Ch Width",   75),
+    ("band",      "Band",       60),
+    ("security",  "Security",  160),
+    ("vendor",    "Vendor",     90),
+    ("mode",      "Mode",       90),
+    ("level",     "Level",     110),
+    ("last_seen", "Last Seen",  75),
+    ("max_dbm",   "Max",        50),
+    ("min_dbm",   "Min",        50),
+    ("avg_dbm",   "Avg",        50),
 ]
 
 
@@ -84,6 +119,13 @@ class WiFiHeatmapApp:
         self.last_scan: list[AccessPoint] = []
         self.selected_bssids: set[str] = set()        # checked on AP tab
         self.selected_bssids_for_heatmap: list[str] = []  # ordered list for rendering
+
+        # Per-BSSID running statistics (accumulated across all auto-scans)
+        self._ap_stats: dict[str, _ApStats] = {}
+
+        # Auto-scan state
+        self._auto_scan_job: Optional[str] = None   # root.after() handle
+        self._auto_scan_enabled: bool = False
 
         self._build_ui()
         self._apply_styles()
@@ -182,36 +224,76 @@ class WiFiHeatmapApp:
     def _build_ap_tab(self):
         f = self.ap_tab
 
-        # Toolbar
-        toolbar = tk.Frame(f, bg=BG3, height=48)
+        # Toolbar row 0: title + manual scan + select buttons
+        toolbar = tk.Frame(f, bg=BG3)
         toolbar.grid(row=0, column=0, sticky="ew")
         toolbar.grid_columnconfigure(10, weight=1)
 
         tk.Label(toolbar, text="  Discovered Access Points",
-                 font=("Courier", 10, "bold"), bg=BG3, fg=TEXT).grid(row=0, column=0, padx=12, pady=12, sticky="w")
+                 font=("Courier", 10, "bold"), bg=BG3, fg=TEXT).grid(
+                 row=0, column=0, padx=12, pady=(10, 2), sticky="w")
 
         self.ap_scan_btn = tk.Button(toolbar, text="🔄  Refresh Scan",
             font=("Courier", 9, "bold"), bg=ACCENT, fg="white",
             relief="flat", padx=12, pady=6, cursor="hand2",
             activebackground="#5590ff", activeforeground="white",
             command=self._refresh_scan)
-        self.ap_scan_btn.grid(row=0, column=1, padx=8, pady=8)
+        self.ap_scan_btn.grid(row=0, column=1, padx=8, pady=(8, 2))
 
         self.ap_select_all_btn = tk.Button(toolbar, text="☑  Select All",
             font=("Courier", 8), bg=BG2, fg=ACCENT2,
             relief="flat", padx=8, pady=6, cursor="hand2",
             command=self._ap_select_all)
-        self.ap_select_all_btn.grid(row=0, column=2, padx=4, pady=8)
+        self.ap_select_all_btn.grid(row=0, column=2, padx=4, pady=(8, 2))
 
         self.ap_deselect_all_btn = tk.Button(toolbar, text="☐  Deselect All",
             font=("Courier", 8), bg=BG2, fg=TEXT_DIM,
             relief="flat", padx=8, pady=6, cursor="hand2",
             command=self._ap_deselect_all)
-        self.ap_deselect_all_btn.grid(row=0, column=3, padx=4, pady=8)
+        self.ap_deselect_all_btn.grid(row=0, column=3, padx=4, pady=(8, 2))
 
         self.ap_status_label = tk.Label(toolbar, text="No scan yet",
             font=("Courier", 8), bg=BG3, fg=TEXT_DIM)
         self.ap_status_label.grid(row=0, column=10, padx=12, sticky="e")
+
+        # Toolbar row 1: auto-scan controls
+        auto_bar = tk.Frame(toolbar, bg=BG3)
+        auto_bar.grid(row=1, column=0, columnspan=11, sticky="ew", padx=8, pady=(0, 8))
+
+        tk.Label(auto_bar, text="  Auto-scan:",
+                 font=("Courier", 8), bg=BG3, fg=TEXT_DIM).pack(side="left")
+
+        self._auto_scan_var = tk.BooleanVar(value=False)
+        self.auto_scan_chk = tk.Checkbutton(
+            auto_bar, variable=self._auto_scan_var,
+            text="enabled", font=("Courier", 8),
+            bg=BG3, fg=ACCENT2, selectcolor=BG2,
+            activebackground=BG3, activeforeground=ACCENT2,
+            relief="flat", cursor="hand2",
+            command=self._toggle_auto_scan)
+        self.auto_scan_chk.pack(side="left", padx=(4, 12))
+
+        tk.Label(auto_bar, text="Interval:",
+                 font=("Courier", 8), bg=BG3, fg=TEXT_DIM).pack(side="left")
+
+        self._auto_scan_interval = tk.IntVar(value=10)
+        interval_spin = tk.Spinbox(
+            auto_bar, from_=3, to=300, increment=1,
+            textvariable=self._auto_scan_interval,
+            font=("Courier", 8), width=4,
+            bg=BG2, fg=TEXT, insertbackground=TEXT,
+            buttonbackground=BG3, relief="flat",
+            command=self._on_interval_change)
+        interval_spin.pack(side="left", padx=(4, 2))
+        interval_spin.bind("<FocusOut>", self._on_interval_change)
+        interval_spin.bind("<Return>",   self._on_interval_change)
+
+        tk.Label(auto_bar, text="seconds",
+                 font=("Courier", 8), bg=BG3, fg=TEXT_DIM).pack(side="left", padx=(2, 16))
+
+        self.auto_scan_countdown = tk.Label(auto_bar, text="",
+            font=("Courier", 8, "bold"), bg=BG3, fg=WARNING)
+        self.auto_scan_countdown.pack(side="left")
 
         # Canvas for custom AP table (gives us full control over colors/bars)
         table_outer = tk.Frame(f, bg=BG)
@@ -267,48 +349,65 @@ class WiFiHeatmapApp:
 
     def _populate_ap_table(self, aps: list[AccessPoint]):
         """Rebuild the AP table rows from a scan result."""
-        # Destroy old rows
         for w in self.ap_rows_frame.winfo_children():
             w.destroy()
         self._ap_row_widgets.clear()
 
+        now = time.monotonic()
+
         for i, ap in enumerate(aps):
-            row_bg  = BG if i % 2 == 0 else BG2
-            row     = tk.Frame(self.ap_rows_frame, bg=row_bg)
+            row_bg = BG if i % 2 == 0 else BG2
+            row    = tk.Frame(self.ap_rows_frame, bg=row_bg)
             row.pack(fill="x", expand=True)
 
             # Checkbox
             check_var = tk.BooleanVar(value=(ap.bssid in self.selected_bssids))
-            chk = tk.Checkbutton(row, variable=check_var, bg=row_bg,
-                                  activebackground=row_bg,
-                                  fg=ACCENT2, selectcolor=BG3,
-                                  relief="flat", cursor="hand2",
-                                  command=lambda bssid=ap.bssid, v=check_var: self._on_ap_toggle(bssid, v))
-            chk.pack(side="left", padx=(6, 0))
+            tk.Checkbutton(row, variable=check_var, bg=row_bg,
+                           activebackground=row_bg, fg=ACCENT2, selectcolor=BG3,
+                           relief="flat", cursor="hand2",
+                           command=lambda b=ap.bssid, v=check_var: self._on_ap_toggle(b, v)
+                           ).pack(side="left", padx=(6, 0))
 
-            def _cell(text, width, fg=TEXT, anchor="w", bold=False):
-                font = ("Courier", 8, "bold") if bold else ("Courier", 8)
-                lbl = tk.Label(row, text=text, font=font, bg=row_bg, fg=fg,
-                               width=max(1, width // 8), anchor=anchor,
-                               padx=4, pady=5)
-                lbl.pack(side="left")
-                return lbl
+            def _cell(text, width, fg=TEXT, bold=False):
+                tk.Label(row, text=text,
+                         font=("Courier", 8, "bold") if bold else ("Courier", 8),
+                         bg=row_bg, fg=fg,
+                         width=max(1, width // 8), anchor="w",
+                         padx=4, pady=5).pack(side="left")
 
-            _cell(ap.ssid[:20],          160, fg=TEXT,     bold=True)
-            _cell(ap.bssid,              145, fg=TEXT_DIM)
-            _cell(str(ap.channel) if ap.channel else "-", 38,  fg=TEXT)
-            _cell(ap.freq_label(),        90, fg=TEXT)
-            _cell(ap.channel_width or "-",75, fg=TEXT)
-            _cell(ap.band or "-",         60, fg=ACCENT2)
-            _cell(ap.security or "-",    160, fg=TEXT)
-            _cell(ap.vendor or "-",       90, fg=TEXT_DIM)
-            _cell(ap.mode_label(),        90, fg=TEXT)
+            _cell(ap.ssid[:20],                           160, fg=TEXT,     bold=True)
+            _cell(ap.bssid,                               145, fg=TEXT_DIM)
+            _cell(str(ap.channel) if ap.channel else "-",  38, fg=TEXT)
+            _cell(ap.freq_label(),                         90, fg=TEXT)
+            _cell(ap.channel_width or "-",                 75, fg=TEXT)
+            _cell(ap.band or "-",                          60, fg=ACCENT2)
+            _cell(ap.security or "-",                     160, fg=TEXT)
+            _cell(ap.vendor or "-",                        90, fg=TEXT_DIM)
+            _cell(ap.mode_label(),                         90, fg=TEXT)
 
-            # Signal level bar (canvas-drawn)
+            # Signal level bar
             bar_frame = tk.Frame(row, bg=row_bg, width=110, height=26)
             bar_frame.pack(side="left", padx=4)
             bar_frame.pack_propagate(False)
             self._draw_signal_bar(bar_frame, ap.signal_dbm, row_bg)
+
+            # ── Stat columns ──────────────────────────────────────────────────
+            stats = self._ap_stats.get(ap.bssid)
+            if stats and stats.count > 0:
+                last_seen_str = stats.last_seen_str(now)
+                max_str  = f"{stats.max_dbm}"
+                min_str  = f"{stats.min_dbm}"
+                avg_str  = f"{stats.avg_dbm}"
+                stat_fg  = TEXT_DIM
+            else:
+                last_seen_str = "—"
+                max_str = min_str = avg_str = "—"
+                stat_fg = TEXT_DIM
+
+            _cell(last_seen_str, 75, fg=stat_fg)
+            _cell(max_str,       50, fg=SIG_GREEN  if stats and stats.count else TEXT_DIM)
+            _cell(min_str,       50, fg=SIG_RED    if stats and stats.count else TEXT_DIM)
+            _cell(avg_str,       50, fg=_sig_color(stats.avg_dbm) if stats and stats.count else TEXT_DIM)
 
             # Hover highlight
             def _on_enter(e, r=row, bg=row_bg):
@@ -324,11 +423,7 @@ class WiFiHeatmapApp:
             row.bind("<Enter>", _on_enter)
             row.bind("<Leave>", _on_leave)
 
-            self._ap_row_widgets.append({
-                "bssid": ap.bssid,
-                "check_var": check_var,
-                "row": row,
-            })
+            self._ap_row_widgets.append({"bssid": ap.bssid, "check_var": check_var, "row": row})
 
         self.ap_rows_frame.update_idletasks()
         self.ap_canvas.configure(scrollregion=self.ap_canvas.bbox("all"))
@@ -556,6 +651,13 @@ class WiFiHeatmapApp:
         self.scanning = False
         self.last_scan = aps
         self.ap_scan_btn.config(text="🔄  Refresh Scan", state="normal")
+
+        # Accumulate running stats for every AP seen in this scan
+        for ap in aps:
+            if ap.bssid not in self._ap_stats:
+                self._ap_stats[ap.bssid] = _ApStats()
+            self._ap_stats[ap.bssid].update(ap.signal_dbm)
+
         self.ap_status_label.config(
             text=f"Found {len(aps)} network{'s' if len(aps) != 1 else ''}",
             fg=SUCCESS)
@@ -567,15 +669,76 @@ class WiFiHeatmapApp:
         self._update_heatmap_ap_selector()
         self._set_status(f"Scan complete — {len(aps)} networks found")
 
+        # Schedule next auto-scan if enabled
+        if self._auto_scan_enabled:
+            self._schedule_auto_scan()
+
     def _scan_error(self, err: str):
         self.scanning = False
         self.ap_scan_btn.config(text="🔄  Refresh Scan", state="normal")
         self.ap_status_label.config(text="Scan failed", fg=DANGER)
         self._set_status(f"Scan failed: {err}", error=True)
+        # Keep auto-scanning even after an error
+        if self._auto_scan_enabled:
+            self._schedule_auto_scan()
         messagebox.showerror("Scan Error",
             f"WiFi scan failed:\n{err}\n\n"
             "On Linux, try: sudo nmcli dev wifi list --rescan yes\n"
             "On Windows, run as Administrator if needed.")
+
+    # ── Auto-scan ─────────────────────────────────────────────────────────────
+
+    def _toggle_auto_scan(self):
+        self._auto_scan_enabled = self._auto_scan_var.get()
+        if self._auto_scan_enabled:
+            self._schedule_auto_scan()
+            self.ap_scan_btn.config(state="disabled")   # manual scan disabled while auto is on
+        else:
+            self._cancel_auto_scan()
+            self.ap_scan_btn.config(state="normal")
+            self.auto_scan_countdown.config(text="")
+
+    def _on_interval_change(self, event=None):
+        """User changed the interval spinbox — restart the countdown if running."""
+        if self._auto_scan_enabled:
+            self._cancel_auto_scan()
+            self._schedule_auto_scan()
+
+    def _schedule_auto_scan(self):
+        """Start the countdown ticker then fire the scan at the end."""
+        self._cancel_auto_scan()
+        interval = max(3, self._auto_scan_interval.get())
+        self._auto_scan_remaining = interval
+        self._tick_countdown()
+
+    def _cancel_auto_scan(self):
+        if self._auto_scan_job:
+            self.root.after_cancel(self._auto_scan_job)
+            self._auto_scan_job = None
+
+    def _tick_countdown(self):
+        """Called every second to update the countdown label."""
+        if not self._auto_scan_enabled:
+            self.auto_scan_countdown.config(text="")
+            return
+        if self._auto_scan_remaining <= 0:
+            self.auto_scan_countdown.config(text="scanning…", fg=WARNING)
+            self._fire_auto_scan()
+            return
+        self.auto_scan_countdown.config(
+            text=f"next scan in {self._auto_scan_remaining}s", fg=TEXT_DIM)
+        self._auto_scan_remaining -= 1
+        self._auto_scan_job = self.root.after(1000, self._tick_countdown)
+
+    def _fire_auto_scan(self):
+        """Trigger the actual scan for the auto-scan cycle."""
+        if self.scanning:
+            # A placement scan is in progress — reschedule without firing
+            self._schedule_auto_scan()
+            return
+        self.scanning = True
+        self.ap_status_label.config(text="Auto-scanning…", fg=WARNING)
+        threading.Thread(target=self._do_scan, daemon=True).start()
 
     # ── Scanning (Heatmap placement) ──────────────────────────────────────────
 
@@ -706,6 +869,7 @@ class WiFiHeatmapApp:
         self.session = Session(name="New Session")
         self.session_path = None
         self.selected_bssids_for_heatmap = []
+        self._ap_stats.clear()
         self._refresh_everything()
         self._set_status("New session started")
 
@@ -841,6 +1005,7 @@ def main():
         pass
 
     WiFiHeatmapApp(root, initial_session=args.session)
+    root.protocol("WM_DELETE_WINDOW", lambda: (root.destroy()))
     root.mainloop()
 
 
