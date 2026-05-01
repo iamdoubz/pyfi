@@ -224,7 +224,7 @@ class WiFiHeatmapApp:
     def _build_ap_tab(self):
         f = self.ap_tab
 
-        # Toolbar row 0: title + manual scan + select buttons
+        # ── Toolbar ───────────────────────────────────────────────────────────
         toolbar = tk.Frame(f, bg=BG3)
         toolbar.grid(row=0, column=0, sticky="ew")
         toolbar.grid_columnconfigure(10, weight=1)
@@ -256,7 +256,7 @@ class WiFiHeatmapApp:
             font=("Courier", 8), bg=BG3, fg=TEXT_DIM)
         self.ap_status_label.grid(row=0, column=10, padx=12, sticky="e")
 
-        # Toolbar row 1: auto-scan controls
+        # Auto-scan controls row
         auto_bar = tk.Frame(toolbar, bg=BG3)
         auto_bar.grid(row=1, column=0, columnspan=11, sticky="ew", padx=8, pady=(0, 8))
 
@@ -295,24 +295,19 @@ class WiFiHeatmapApp:
             font=("Courier", 8, "bold"), bg=BG3, fg=WARNING)
         self.auto_scan_countdown.pack(side="left")
 
-        # Canvas for custom AP table (gives us full control over colors/bars)
+        # ── Scrollable table (header + rows share one Canvas) ─────────────────
+        # Both the sticky header row and every data row are child frames of a
+        # single inner container that sits inside the Canvas window. This
+        # guarantees horizontal scroll moves header and data identically, and
+        # that pixel-exact column widths produce perfect alignment.
         table_outer = tk.Frame(f, bg=BG)
         table_outer.grid(row=1, column=0, sticky="nsew")
         table_outer.columnconfigure(0, weight=1)
-        table_outer.rowconfigure(1, weight=1)
+        table_outer.rowconfigure(0, weight=1)
 
-        # Column headers
-        self._build_ap_header(table_outer)
-
-        # Scrollable body
-        body_frame = tk.Frame(table_outer, bg=BG)
-        body_frame.grid(row=1, column=0, sticky="nsew")
-        body_frame.columnconfigure(0, weight=1)
-        body_frame.rowconfigure(0, weight=1)
-
-        self.ap_canvas = tk.Canvas(body_frame, bg=BG, highlightthickness=0)
-        ap_vscroll = ttk.Scrollbar(body_frame, orient="vertical",   command=self.ap_canvas.yview)
-        ap_hscroll = ttk.Scrollbar(body_frame, orient="horizontal", command=self.ap_canvas.xview)
+        self.ap_canvas = tk.Canvas(table_outer, bg=BG, highlightthickness=0)
+        ap_vscroll = ttk.Scrollbar(table_outer, orient="vertical",   command=self.ap_canvas.yview)
+        ap_hscroll = ttk.Scrollbar(table_outer, orient="horizontal", command=self.ap_canvas.xview)
 
         self.ap_canvas.configure(yscrollcommand=ap_vscroll.set,
                                   xscrollcommand=ap_hscroll.set)
@@ -320,94 +315,186 @@ class WiFiHeatmapApp:
         ap_vscroll.grid(row=0, column=1, sticky="ns")
         ap_hscroll.grid(row=1, column=0, sticky="ew")
 
-        self.ap_rows_frame = tk.Frame(self.ap_canvas, bg=BG)
+        # Single inner frame: row 0 = header, rows 1+ = data
+        self.ap_inner = tk.Frame(self.ap_canvas, bg=BG)
         self.ap_canvas_window = self.ap_canvas.create_window(
-            (0, 0), window=self.ap_rows_frame, anchor="nw")
+            (0, 0), window=self.ap_inner, anchor="nw")
 
-        self.ap_rows_frame.bind("<Configure>", self._on_ap_frame_configure)
+        self.ap_inner.bind("<Configure>", self._on_ap_frame_configure)
         self.ap_canvas.bind("<Configure>", self._on_ap_canvas_configure)
         self.ap_canvas.bind("<MouseWheel>", lambda e: self.ap_canvas.yview_scroll(-1*(e.delta//120), "units"))
         self.ap_canvas.bind("<Button-4>",   lambda e: self.ap_canvas.yview_scroll(-1, "units"))
         self.ap_canvas.bind("<Button-5>",   lambda e: self.ap_canvas.yview_scroll( 1, "units"))
 
-        # Row data storage
-        self._ap_row_widgets: list[dict] = []   # list of {bssid, check_var, row_frame, ...}
+        # Build the header as row 0 inside ap_inner
+        self._build_ap_header(self.ap_inner)
 
-    def _build_ap_header(self, parent):
+        # Row data storage
+        self._ap_row_widgets: list[dict] = []
+
+    # ── Column geometry ───────────────────────────────────────────────────────
+    # We use fixed pixel widths throughout. CELL_PAD is the total horizontal
+    # padding inside every cell (left + right). Every cell widget is given
+    # width=col_px so the header and data columns are identical in size.
+    CELL_PAD   = 8    # px padding on each side inside a cell label
+    ROW_HEIGHT = 28   # px height for every row including header
+
+    def _col_px(self, width_hint: int) -> int:
+        """Return the actual pixel width for a column given its hint."""
+        return width_hint  # hints are already in pixels; no scaling needed
+
+    def _build_ap_header(self, parent: tk.Frame):
+        """Build the header as the first row of the inner frame."""
         hdr = tk.Frame(parent, bg=BG3)
         hdr.grid(row=0, column=0, sticky="ew")
+
+        # Checkbox placeholder — same width as the actual Checkbutton (26px)
+        tk.Label(hdr, text="", bg=BG3, width=3).pack(side="left", padx=(2, 0))
+
         for col_id, label, width in AP_COLUMNS:
-            tk.Label(hdr, text=label, font=("Courier", 8, "bold"),
-                     bg=BG3, fg=TEXT_DIM, width=max(1, width // 8),
-                     anchor="w", padx=6, pady=6).pack(side="left")
+            if col_id == "sel":
+                continue   # handled by the placeholder above
+            tk.Label(hdr, text=label,
+                     font=("Courier", 8, "bold"),
+                     bg=BG3, fg=TEXT_DIM,
+                     width=0,          # let wraplength/padx control width
+                     anchor="w",
+                     padx=self.CELL_PAD // 2,
+                     pady=6
+                     ).pack(side="left",
+                            ipadx=0,
+                            # Force exact pixel width via a fixed-size frame wrapper
+                            )
+            # Use a fixed-pixel container frame so the label is always exactly
+            # `width` pixels wide — matching the data cells below.
+            hdr.pack_slaves()[-1].pack_forget()
+            container = tk.Frame(hdr, bg=BG3, width=width, height=self.ROW_HEIGHT)
+            container.pack(side="left")
+            container.pack_propagate(False)
+            tk.Label(container, text=label,
+                     font=("Courier", 8, "bold"),
+                     bg=BG3, fg=TEXT_DIM,
+                     anchor="w", padx=4).place(relwidth=1, relheight=1)
 
     def _on_ap_frame_configure(self, event):
         self.ap_canvas.configure(scrollregion=self.ap_canvas.bbox("all"))
 
     def _on_ap_canvas_configure(self, event):
-        self.ap_canvas.itemconfig(self.ap_canvas_window, width=event.width)
+        # Do NOT force the inner frame to the canvas width — that would
+        # suppress horizontal scrolling. Let it be its natural width.
+        pass
+
+    def _known_bssids_ordered(self) -> list[str]:
+        """
+        Return all BSSIDs ever seen, in a stable display order:
+        currently-visible APs first (sorted by signal desc), then
+        previously-seen-but-now-absent APs (sorted by last_seen desc).
+        """
+        current_bssids = [ap.bssid for ap in self.last_scan]
+        current_set    = set(current_bssids)
+        stale_bssids   = sorted(
+            [b for b in self._ap_stats if b not in current_set],
+            key=lambda b: self._ap_stats[b].last_seen_ts,
+            reverse=True
+        )
+        return current_bssids + stale_bssids
 
     def _populate_ap_table(self, aps: list[AccessPoint]):
-        """Rebuild the AP table rows from a scan result."""
-        for w in self.ap_rows_frame.winfo_children():
-            w.destroy()
+        """
+        Rebuild data rows inside ap_inner (below the sticky header).
+        Shows every BSSID ever seen — current ones at full brightness,
+        stale ones (absent from latest scan) dimmed with a 'last seen' note.
+        """
+        # Remove old data rows (keep row 0 = header)
+        for widget in list(self.ap_inner.grid_slaves()):
+            info = widget.grid_info()
+            if info.get("row", 0) > 0:
+                widget.destroy()
         self._ap_row_widgets.clear()
 
-        now = time.monotonic()
+        # Build a lookup map for current scan
+        current_map: dict[str, AccessPoint] = {ap.bssid: ap for ap in aps}
+        now         = time.monotonic()
+        all_bssids  = self._known_bssids_ordered()
 
-        for i, ap in enumerate(aps):
-            row_bg = BG if i % 2 == 0 else BG2
-            row    = tk.Frame(self.ap_rows_frame, bg=row_bg)
-            row.pack(fill="x", expand=True)
+        for i, bssid in enumerate(all_bssids):
+            ap      = current_map.get(bssid)
+            stats   = self._ap_stats.get(bssid)
+            is_live = ap is not None
+            row_num = i + 1   # row 0 is the header
 
-            # Checkbox
-            check_var = tk.BooleanVar(value=(ap.bssid in self.selected_bssids))
+            row_bg  = BG if i % 2 == 0 else BG2
+            dim_fg  = "#3a3a5a"   # very dim — used for stale rows
+
+            row = tk.Frame(self.ap_inner, bg=row_bg)
+            row.grid(row=row_num, column=0, sticky="ew")
+
+            # ── Checkbox ──────────────────────────────────────────────────────
+            check_var = tk.BooleanVar(value=(bssid in self.selected_bssids))
             tk.Checkbutton(row, variable=check_var, bg=row_bg,
                            activebackground=row_bg, fg=ACCENT2, selectcolor=BG3,
                            relief="flat", cursor="hand2",
-                           command=lambda b=ap.bssid, v=check_var: self._on_ap_toggle(b, v)
-                           ).pack(side="left", padx=(6, 0))
+                           command=lambda b=bssid, v=check_var: self._on_ap_toggle(b, v)
+                           ).pack(side="left", padx=(4, 0))
 
             def _cell(text, width, fg=TEXT, bold=False):
-                tk.Label(row, text=text,
+                """Pack a fixed-pixel-width cell."""
+                container = tk.Frame(row, bg=row_bg, width=width, height=self.ROW_HEIGHT)
+                container.pack(side="left")
+                container.pack_propagate(False)
+                tk.Label(container, text=str(text),
                          font=("Courier", 8, "bold") if bold else ("Courier", 8),
                          bg=row_bg, fg=fg,
-                         width=max(1, width // 8), anchor="w",
-                         padx=4, pady=5).pack(side="left")
+                         anchor="w", padx=4).place(relwidth=1, relheight=1)
 
-            _cell(ap.ssid[:20],                           160, fg=TEXT,     bold=True)
-            _cell(ap.bssid,                               145, fg=TEXT_DIM)
-            _cell(str(ap.channel) if ap.channel else "-",  38, fg=TEXT)
-            _cell(ap.freq_label(),                         90, fg=TEXT)
-            _cell(ap.channel_width or "-",                 75, fg=TEXT)
-            _cell(ap.band or "-",                          60, fg=ACCENT2)
-            _cell(ap.security or "-",                     160, fg=TEXT)
-            _cell(ap.vendor or "-",                        90, fg=TEXT_DIM)
-            _cell(ap.mode_label(),                         90, fg=TEXT)
+            # Resolve display values — use last-known from stats when AP is stale
+            ssid     = ap.ssid if ap else self._ap_stats_ssid(bssid)
+            channel  = str(ap.channel) if ap and ap.channel else "—"
+            freq     = ap.freq_label()     if ap else "—"
+            width_s  = ap.channel_width or "—" if ap else "—"
+            band     = ap.band or "—"      if ap else "—"
+            security = ap.security or "—"  if ap else "—"
+            vendor   = ap.vendor or "—"    if ap else "—"
+            mode     = ap.mode_label()     if ap else "—"
 
-            # Signal level bar
-            bar_frame = tk.Frame(row, bg=row_bg, width=110, height=26)
-            bar_frame.pack(side="left", padx=4)
-            bar_frame.pack_propagate(False)
-            self._draw_signal_bar(bar_frame, ap.signal_dbm, row_bg)
+            text_fg  = TEXT     if is_live else dim_fg
+            dim2     = TEXT_DIM if is_live else dim_fg
 
-            # ── Stat columns ──────────────────────────────────────────────────
-            stats = self._ap_stats.get(ap.bssid)
-            if stats and stats.count > 0:
-                last_seen_str = stats.last_seen_str(now)
-                max_str  = f"{stats.max_dbm}"
-                min_str  = f"{stats.min_dbm}"
-                avg_str  = f"{stats.avg_dbm}"
-                stat_fg  = TEXT_DIM
+            _cell(ssid[:20],  160, fg=text_fg, bold=True)
+            _cell(bssid,      145, fg=dim2)
+            _cell(channel,     38, fg=text_fg)
+            _cell(freq,        90, fg=text_fg)
+            _cell(width_s,     75, fg=text_fg)
+            _cell(band,        60, fg=ACCENT2 if is_live else dim_fg)
+            _cell(security,   160, fg=text_fg)
+            _cell(vendor,      90, fg=dim2)
+            _cell(mode,        90, fg=text_fg)
+
+            # Signal bar — live APs get a colored bar; stale get a dim placeholder
+            bar_w = 110
+            bar_container = tk.Frame(row, bg=row_bg, width=bar_w, height=self.ROW_HEIGHT)
+            bar_container.pack(side="left")
+            bar_container.pack_propagate(False)
+            if is_live:
+                self._draw_signal_bar(bar_container, ap.signal_dbm, row_bg)
             else:
-                last_seen_str = "—"
-                max_str = min_str = avg_str = "—"
-                stat_fg = TEXT_DIM
+                tk.Label(bar_container, text="out of range",
+                         font=("Courier", 7), bg=row_bg, fg=dim_fg,
+                         anchor="w", padx=4).place(relwidth=1, relheight=1)
 
-            _cell(last_seen_str, 75, fg=stat_fg)
-            _cell(max_str,       50, fg=SIG_GREEN  if stats and stats.count else TEXT_DIM)
-            _cell(min_str,       50, fg=SIG_RED    if stats and stats.count else TEXT_DIM)
-            _cell(avg_str,       50, fg=_sig_color(stats.avg_dbm) if stats and stats.count else TEXT_DIM)
+            # Stat columns
+            if stats and stats.count > 0:
+                ls_str  = stats.last_seen_str(now)
+                max_str = f"{stats.max_dbm}"
+                min_str = f"{stats.min_dbm}"
+                avg_str = f"{stats.avg_dbm}"
+                _cell(ls_str,  75, fg=TEXT_DIM if is_live else dim_fg)
+                _cell(max_str, 50, fg=SIG_GREEN if is_live else dim_fg)
+                _cell(min_str, 50, fg=SIG_RED   if is_live else dim_fg)
+                _cell(avg_str, 50, fg=_sig_color(stats.avg_dbm) if is_live else dim_fg)
+            else:
+                for w in (75, 50, 50, 50):
+                    _cell("—", w, fg=dim_fg)
 
             # Hover highlight
             def _on_enter(e, r=row, bg=row_bg):
@@ -423,10 +510,15 @@ class WiFiHeatmapApp:
             row.bind("<Enter>", _on_enter)
             row.bind("<Leave>", _on_leave)
 
-            self._ap_row_widgets.append({"bssid": ap.bssid, "check_var": check_var, "row": row})
+            self._ap_row_widgets.append({"bssid": bssid, "check_var": check_var, "row": row})
 
-        self.ap_rows_frame.update_idletasks()
+        self.ap_inner.update_idletasks()
         self.ap_canvas.configure(scrollregion=self.ap_canvas.bbox("all"))
+
+    def _ap_stats_ssid(self, bssid: str) -> str:
+        """Look up SSID for a stale BSSID from session data or return the BSSID itself."""
+        ssid = self.session.get_ssid(bssid)
+        return ssid if ssid != bssid else bssid
 
     def _draw_signal_bar(self, parent: tk.Frame, dbm: int, bg_color: str):
         """Draw a small colored bar chart showing signal strength."""
@@ -456,7 +548,7 @@ class WiFiHeatmapApp:
         self._update_heatmap_ap_selector()
 
     def _ap_select_all(self):
-        self.selected_bssids = {ap.bssid for ap in self.last_scan}
+        self.selected_bssids = {r["bssid"] for r in self._ap_row_widgets}
         for row in self._ap_row_widgets:
             row["check_var"].set(True)
         self._sync_heatmap_bssids()
