@@ -16,8 +16,10 @@ from data import Session, Measurement
 from interpolator import interpolate, HeatmapData, get_signal_at
 
 
-# Custom colormap: deep blue (weak) → cyan → green → yellow → red (strong)
+# Custom colormap: black (no signal) → dark navy → blue → cyan → green → yellow → red (strong)
+# Black occupies the very bottom so "not found" markers read naturally against the scale.
 SIGNAL_COLORS = [
+    (0.00, 0.00, 0.00),   # no signal: black  ← new
     (0.05, 0.05, 0.35),   # very weak: dark navy
     (0.10, 0.40, 0.80),   # weak: blue
     (0.10, 0.80, 0.80),   # moderate: cyan
@@ -69,6 +71,7 @@ def render_heatmap(
     ax.clear()
 
     points, values = session.get_points_and_values_multi(bssids)
+    missing_points = session.get_missing_points(bssids)   # positions with no signal
     w, h = session.canvas_width, session.canvas_height
 
     # Build a human-readable label for the title
@@ -119,6 +122,10 @@ def render_heatmap(
                          fontsize=7, color='gray', va='bottom')
             cbar.ax.text(1.4, -30, "Excellent", transform=cbar.ax.get_yaxis_transform(),
                          fontsize=7, color='gray', va='top')
+            # Black swatch at the very bottom representing "no signal found"
+            cbar.ax.text(1.4, -95, "No signal", transform=cbar.ax.get_yaxis_transform(),
+                         fontsize=7, color='black', va='top',
+                         bbox=dict(facecolor='white', edgecolor='none', pad=1.5))
     else:
         # ── Not enough points yet — show progress indicator ────────────────
         collected = len(points)
@@ -141,19 +148,32 @@ def render_heatmap(
                 zorder=3)
 
     # ── Draw measurement points ───────────────────────────────────────────────
-    if show_points and points:
+    radius = max(w, h) * 0.012
+    if show_points:
+        # Valid signal points — colored by strength
         for (px, py), dbm in zip(points, values):
             color = SIGNAL_CMAP((dbm + 90) / 60)
-            circle = Circle((px, py), radius=max(w, h) * 0.012,
-                            facecolor=color, edgecolor='white',
-                            linewidth=1.5, zorder=5, alpha=0.95)
-            ax.add_patch(circle)
-            ax.text(px, py - max(w, h) * 0.022, f"{int(round(dbm))}",
+            ax.add_patch(Circle((px, py), radius=radius,
+                                facecolor=color, edgecolor='white',
+                                linewidth=1.5, zorder=5, alpha=0.95))
+            ax.text(px, py - radius * 1.8, f"{int(round(dbm))}",
                     ha='center', va='bottom', fontsize=7, color='white',
                     fontweight='bold', zorder=6)
 
+        # Missing signal points — black circle with "?" label
+        for (px, py) in missing_points:
+            ax.add_patch(Circle((px, py), radius=radius,
+                                facecolor='black', edgecolor='white',
+                                linewidth=1.5, zorder=5, alpha=0.95))
+            ax.text(px, py, "?",
+                    ha='center', va='center', fontsize=7, color='white',
+                    fontweight='bold', zorder=6)
+
     # ── Labels & styling ──────────────────────────────────────────────────────
-    point_note = f"{len(points)} measurement{'s' if len(points) != 1 else ''}"
+    total_points = len(points) + len(missing_points)
+    point_note = f"{total_points} measurement{'s' if total_points != 1 else ''}"
+    if missing_points:
+        point_note += f"  •  {len(missing_points)} out of range (●)"
     if len(bssids) > 1:
         point_note += f"  •  avg of {len(bssids)} BSSIDs"
     if not session.floorplan_path:
