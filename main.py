@@ -526,7 +526,7 @@ class WiFiHeatmapApp:
 
     def _do_scan(self):
         try:
-            aps = scan_averaged(samples=3)
+            aps = scan_averaged(samples=5, delay=0.4)
             self.root.after(0, lambda: self._scan_complete(aps))
         except Exception as e:
             self.root.after(0, lambda: self._scan_error(str(e)))
@@ -571,7 +571,7 @@ class WiFiHeatmapApp:
 
     def _scan_for_placement(self):
         try:
-            aps = scan_averaged(samples=5)
+            aps = scan_averaged(samples=6, delay=0.4)
             self.root.after(0, lambda: self._ready_to_place(aps))
         except Exception as e:
             self.root.after(0, lambda: self._scan_error(str(e)))
