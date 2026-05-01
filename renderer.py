@@ -62,6 +62,10 @@ def render_heatmap(
     if fig is None or ax is None:
         fig, ax = plt.subplots(figsize=(10, 7))
 
+    # Remove any colorbars left over from previous renders.
+    # Colorbars attach to the figure, not the axes, so ax.clear() doesn't touch them.
+    for ax_obj in fig.axes[1:]:   # axes[0] is the main plot; everything else is a colorbar
+        ax_obj.remove()
     ax.clear()
 
     points, values = session.get_points_and_values_multi(bssids)
