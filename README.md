@@ -55,6 +55,10 @@ The application has two tabs and a persistent left sidebar.
 
 ### Tab 1 — Access Points
 
+<p align="center">
+  <img src="extras/page-accesspoints.png" alt="An image of the wifi heatmap generator page 1 titled Access Points that shows discovered SSID and BSSID network information">
+</p>
+
 The first tab you see on launch. Shows a scrollable table of every access point
 ever discovered during the session — including those that have gone out of range,
 which remain in the list permanently and are shown dimmed with an "out of range"
@@ -69,8 +73,8 @@ indicator in the Level column.
 | BSSID | Hardware MAC address — unique per physical radio |
 | Ch | 802.11 channel number |
 | Frequency | Centre frequency in MHz |
-| Ch Width | Channel width (20 / 40 / 80 / 160 MHz) |
-| Band | 2.4 GHz or 5 GHz |
+| Ch Width | Channel width (20 / 40 / 80 / 160 / 320 MHz) |
+| Band | 2.4, 5, or 6 GHz |
 | Security | WPA3-Personal, WPA2-Personal, WPA2-Enterprise, WPA-Personal, WEP, Open |
 | Vendor | Manufacturer derived from BSSID OUI prefix (~100 vendors recognized) |
 | Mode | 802.11 mode: ax (Wi-Fi 6), ac (Wi-Fi 5), n (Wi-Fi 4), g, a, b |
@@ -94,6 +98,10 @@ The table scrolls both horizontally and vertically. Column headers are
 pixel-exact aligned to their data columns.
 
 ### Tab 2 — Heatmap
+
+<p align="center">
+  <img src="extras/page-heatmap.png" alt="An image of the wifi heatmap generator page 2 titled Heatmap showing a datagrid of measurements and active networks">
+</p>
 
 The heatmap canvas with measurement tools.
 
@@ -229,6 +237,12 @@ access is denied, the scanner falls back to `netsh` automatically.
 
 ---
 
+## 🗑️ Known limitations 🤦
+
+If you are on Windows 11 24H2 (possibly earlier) and later versions, Microsoft *requires* Location Services to be enabled. This isn't a fault of the pyFi program, but an OS problem.
+
+---
+
 ## Signal Sampling
 
 Each **▶ Scan & Place** measurement takes **10 samples at 100 ms intervals**
@@ -310,3 +324,11 @@ not auto-saved — use **💾 Save Session** or **💾 Save As…** from the sid
 | `renderer.py` | Matplotlib heatmap rendering — colorbar, measurement dots, missing-signal black dots |
 | `data.py` | Session model — measurements, multi-BSSID averaging, missing-point detection, JSON persistence |
 | `requirements.txt` | Python dependencies (`numpy`, `scipy`, `matplotlib`, `Pillow`) |
+
+---
+
+## 🖼️ Screenshots 🖼️
+
+<p align="center">
+  <img src="extras/example_export.png" alt="An image of the wifi heatmap generator heatmap export">
+</p>
