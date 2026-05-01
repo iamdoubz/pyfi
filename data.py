@@ -94,6 +94,18 @@ class Session:
                 values.append(sum(readings) / len(readings))
         return points, values
 
+    def get_missing_points(self, bssids: list[str]) -> list[tuple[float, float]]:
+        """
+        Return positions of measurements where none of the requested BSSIDs
+        were visible. These are locations where the user took a reading but
+        the selected network(s) were completely out of range.
+        """
+        missing = []
+        for m in self.measurements:
+            if not any(b in m.signals for b in bssids):
+                missing.append((m.x, m.y))
+        return missing
+
     def save(self, path: str):
         """Save session to JSON file."""
         data = {
