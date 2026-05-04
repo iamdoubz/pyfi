@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
 import os
+import sys
 import argparse
 import time
 from dataclasses import dataclass, field
@@ -28,6 +29,19 @@ from matplotlib.figure import Figure
 from scanner import scan_averaged, AccessPoint
 from data import Session, Measurement
 from renderer import render_heatmap, SIGNAL_CMAP
+
+
+def _resource_path(relative_path: str) -> str:
+    """
+    Resolve a path to a bundled resource at runtime.
+
+    PyInstaller extracts bundled files to a temporary folder at runtime and
+    sets sys._MEIPASS to that folder's path. When running from source,
+    the directory containing main.py is used instead — so both the compiled
+    binary and plain `python main.py` resolve assets correctly.
+    """
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, relative_path)
 
 
 # ── Palette ───────────────────────────────────────────────────────────────────
@@ -185,19 +199,19 @@ class WiFiHeatmapApp:
 
         # Logo image — load pyfi-mini.png, fall back to emoji if file is missing
         try:
-            _logo_img = tk.PhotoImage(file=os.path.join(
-                os.path.dirname(__file__), "extras", "pyfi-mini.png"))
-            # Scale down if the image is large (PhotoImage subsample keeps it crisp)
-            _logo_img = _logo_img.subsample(
-                max(1, _logo_img.width() // 48),
-                max(1, _logo_img.height() // 48))
+            _logo_img = tk.PhotoImage(file=_resource_path(
+                os.path.join("extras", "pyfi-mini.png")))
+            # Use a single divisor for both axes to preserve aspect ratio.
+            # Target ~64px on the longest side.
+            _divisor = max(1, max(_logo_img.width(), _logo_img.height()) // 92)
+            _logo_img = _logo_img.subsample(_divisor, _divisor)
             tk.Label(f, image=_logo_img, bg=BG2).pack(pady=(20, 4))
             f._logo_img_ref = _logo_img   # prevent garbage collection
         except Exception:
             tk.Label(f, text="📡", font=("Segoe UI Emoji", 28), bg=BG2, fg=ACCENT).pack(pady=(20, 4))
 
-        tk.Label(f, text="pyFi", font=("Georgia", 13, "bold"), bg=BG2, fg=TEXT).pack()
-        tk.Label(f, text="Generator",    font=("Georgia", 11),          bg=BG2, fg=TEXT_DIM).pack(pady=(0, 16))
+        tk.Label(f, text="WiFi", font=("Georgia", 13, "bold"), bg=BG2, fg=TEXT).pack()
+        tk.Label(f, text="Heatmap Generator", font=("Georgia", 10), bg=BG2, fg=TEXT_DIM).pack(pady=(0, 16))
 
         ttk.Separator(f, orient="horizontal").pack(fill="x", padx=12, pady=4)
 
@@ -1350,7 +1364,7 @@ def main():
     root.title("pyFi")
 
     # Set taskbar / window icon
-    _icon_path = os.path.join(os.path.dirname(__file__), "extras", "pyfi-logo.ico")
+    _icon_path = _resource_path(os.path.join("extras", "pyfi-logo.ico"))
     try:
         root.iconbitmap(default=_icon_path)
     except Exception:
