@@ -390,6 +390,12 @@ or **💾 Save As…** from the sidebar.
 
 ## 🖼️ Screenshots 🖼️
 
+### Single BSSID
 <p align="center">
   <img src="extras/example_export.png" alt="An image of the wifi heatmap generator heatmap export">
+</p>
+
+### Single BSSID w/AP
+<p align="center">
+  <img src="extras/example_export_with_ap.png" alt="An image of the wifi heatmap generator heatmap export with access point">
 </p>
