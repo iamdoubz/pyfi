@@ -127,6 +127,11 @@ class WiFiHeatmapApp:
         self._auto_scan_job: Optional[str] = None   # root.after() handle
         self._auto_scan_enabled: bool = False
 
+        # AP position drag state
+        self._ap_drag_mode: bool = False        # True when "Place APs" is active
+        self._dragging_bssid: Optional[str] = None
+        self._drag_ghost = None                  # matplotlib artist for drag preview
+
         self._build_ui()
         self._apply_styles()
 
@@ -460,7 +465,7 @@ class WiFiHeatmapApp:
             text_fg  = TEXT     if is_live else dim_fg
             dim2     = TEXT_DIM if is_live else dim_fg
 
-            _cell(ssid[:20],  160, fg=text_fg, bold=True)
+            _cell(ssid,       160, fg=text_fg, bold=True)
             _cell(bssid,      145, fg=dim2)
             _cell(channel,     38, fg=text_fg)
             _cell(freq,        90, fg=text_fg)
@@ -597,6 +602,20 @@ class WiFiHeatmapApp:
             command=self._undo_last)
         self.undo_btn.grid(row=0, column=2, padx=4, pady=8)
 
+        # Place APs toggle — activates drag-and-drop mode for positioning APs
+        self.place_ap_btn = tk.Button(toolbar, text="◆  Place APs",
+            font=("Courier", 9), bg=BG2, fg=ACCENT2,
+            relief="flat", padx=10, pady=6, cursor="hand2",
+            activebackground=BG3,
+            command=self._toggle_ap_drag_mode)
+        self.place_ap_btn.grid(row=0, column=3, padx=4, pady=8)
+
+        self.clear_ap_pos_btn = tk.Button(toolbar, text="✕  Clear AP Pins",
+            font=("Courier", 9), bg=BG2, fg=TEXT_DIM,
+            relief="flat", padx=10, pady=6, cursor="hand2",
+            command=self._clear_ap_positions)
+        self.clear_ap_pos_btn.grid(row=0, column=4, padx=4, pady=8)
+
         self.status_label = tk.Label(toolbar, text="Ready",
             font=("Courier", 9), bg=BG3, fg=TEXT_DIM)
         self.status_label.grid(row=0, column=99, padx=12, sticky="e")
@@ -609,7 +628,9 @@ class WiFiHeatmapApp:
 
         self.canvas_widget = FigureCanvasTkAgg(self.fig, master=f)
         self.canvas_widget.get_tk_widget().grid(row=1, column=0, sticky="nsew")
-        self.canvas_widget.mpl_connect("button_press_event", self._on_canvas_click)
+        self.canvas_widget.mpl_connect("button_press_event",   self._on_canvas_click)
+        self.canvas_widget.mpl_connect("motion_notify_event",  self._on_canvas_motion)
+        self.canvas_widget.mpl_connect("button_release_event", self._on_canvas_release)
         f.columnconfigure(0, weight=1)
 
         # Right panel — AP selector + measurements (full window height)
@@ -631,7 +652,8 @@ class WiFiHeatmapApp:
         tk.Label(f,
             text="Check networks on the Access\nPoints tab to include them here.\n"
                  "1 selected = single BSSID mode.\n"
-                 "2+ selected = averaged mode.",
+                 "2+ selected = averaged mode.\n"
+                 "Enable ◆ Place APs then drag\na network here onto the map.",
             font=("Courier", 7), bg=BG2, fg=TEXT_DIM, justify="left", wraplength=230
         ).grid(row=1, column=0, sticky="w", padx=14, pady=(0, 6))
 
@@ -663,19 +685,36 @@ class WiFiHeatmapApp:
 
         ttk.Separator(f, orient="horizontal").grid(row=4, column=0, sticky="ew", padx=8, pady=6)
 
+        # ── AP Positions panel ─────────────────────────────────────────────────
+        tk.Label(f, text="AP POSITIONS  ◆", font=("Courier", 8, "bold"),
+                 bg=BG2, fg=TEXT_DIM).grid(row=5, column=0, sticky="w", padx=14, pady=(4, 2))
+
+        tk.Label(f,
+            text="Click ◆ Place APs, then click a\nnetwork below to arm it, then\n"
+                 "click its location on the map.\nRight-click a ◆ marker to remove.",
+            font=("Courier", 7), bg=BG2, fg=TEXT_DIM, justify="left", wraplength=230
+        ).grid(row=6, column=0, sticky="w", padx=14, pady=(0, 4))
+
+        # Frame that holds one row per active BSSID
+        self.ap_pos_frame = tk.Frame(f, bg=BG2)
+        self.ap_pos_frame.grid(row=7, column=0, sticky="ew", padx=8, pady=(0, 4))
+        self.ap_pos_frame.columnconfigure(0, weight=1)
+
+        ttk.Separator(f, orient="horizontal").grid(row=8, column=0, sticky="ew", padx=8, pady=6)
+
         # ── Measurements list (full remaining height) ──────────────────────
         tk.Label(f, text="MEASUREMENTS", font=("Courier", 8, "bold"),
-                 bg=BG2, fg=TEXT_DIM).grid(row=5, column=0, sticky="w", padx=14, pady=(4, 2))
+                 bg=BG2, fg=TEXT_DIM).grid(row=9, column=0, sticky="w", padx=14, pady=(4, 2))
 
         self.meas_count_label = tk.Label(f, text="0 points collected",
             font=("Courier", 8), bg=BG2, fg=ACCENT2)
-        self.meas_count_label.grid(row=6, column=0, sticky="w", padx=14, pady=(0, 4))
+        self.meas_count_label.grid(row=10, column=0, sticky="w", padx=14, pady=(0, 4))
 
         meas_frame = tk.Frame(f, bg=BG2)
-        meas_frame.grid(row=7, column=0, sticky="nsew", padx=8, pady=(0, 4))
+        meas_frame.grid(row=11, column=0, sticky="nsew", padx=8, pady=(0, 4))
         meas_frame.columnconfigure(0, weight=1)
         meas_frame.rowconfigure(0, weight=1)
-        f.rowconfigure(7, weight=1)
+        f.rowconfigure(11, weight=1)
 
         meas_scroll = ttk.Scrollbar(meas_frame, orient="vertical")
         meas_scroll.grid(row=0, column=1, sticky="ns")
@@ -694,7 +733,7 @@ class WiFiHeatmapApp:
             font=("Courier", 8), bg=BG3, fg=DANGER,
             relief="flat", padx=8, pady=4, cursor="hand2",
             command=self._delete_measurement)
-        self.del_meas_btn.grid(row=8, column=0, sticky="w", padx=12, pady=(0, 10))
+        self.del_meas_btn.grid(row=12, column=0, sticky="w", padx=12, pady=(0, 10))
 
     # ── Active BSSID display on Heatmap tab ───────────────────────────────────
 
@@ -723,7 +762,89 @@ class WiFiHeatmapApp:
 
         self._redraw()
 
-    # ── Scanning (AP Tab) ─────────────────────────────────────────────────────
+    def _update_ap_positions_panel(self, highlight: Optional[str] = None):
+        """
+        Rebuild the AP Positions panel rows — one row per active BSSID.
+        Each row shows: armed indicator | SSID | pinned coords | remove button.
+        Clicking the row arms that BSSID for placement.
+        """
+        for w in self.ap_pos_frame.winfo_children():
+            w.destroy()
+
+        bssids = self.selected_bssids_for_heatmap
+        if not bssids:
+            tk.Label(self.ap_pos_frame, text="  No networks selected",
+                     font=("Courier", 7), bg=BG2, fg=TEXT_DIM
+                     ).grid(row=0, column=0, sticky="w", padx=8, pady=2)
+            return
+
+        for i, bssid in enumerate(bssids):
+            ssid    = self.session.get_ssid(bssid)
+            pos     = self.session.ap_positions.get(bssid)
+            is_armed = (bssid == self._dragging_bssid and self._ap_drag_mode)
+            is_pinned = pos is not None
+
+            row_bg  = "#1a2a1a" if is_armed else (BG3 if is_pinned else BG2)
+            row     = tk.Frame(self.ap_pos_frame, bg=row_bg,
+                               highlightthickness=1,
+                               highlightbackground=ACCENT2 if is_armed else BORDER)
+            row.grid(row=i, column=0, sticky="ew", pady=1)
+            row.columnconfigure(1, weight=1)
+
+            # Armed indicator
+            armed_lbl = tk.Label(row,
+                text="▶" if is_armed else ("◆" if is_pinned else "○"),
+                font=("Courier", 8, "bold"), bg=row_bg,
+                fg=ACCENT2 if is_armed else (SUCCESS if is_pinned else TEXT_DIM),
+                padx=4)
+            armed_lbl.grid(row=0, column=0, sticky="w")
+
+            # SSID + coords
+            coord_str = f"  ({int(pos[0])}, {int(pos[1])})" if pos else "  not pinned"
+            name_lbl = tk.Label(row,
+                text=f"{ssid[:14]}{coord_str}",
+                font=("Courier", 7), bg=row_bg,
+                fg=TEXT if is_pinned else TEXT_DIM,
+                anchor="w", padx=2)
+            name_lbl.grid(row=0, column=1, sticky="ew")
+
+            # Remove button (only shown when pinned)
+            if is_pinned:
+                rm_btn = tk.Button(row, text="✕",
+                    font=("Courier", 7), bg=row_bg, fg=DANGER,
+                    relief="flat", padx=2, cursor="hand2",
+                    command=lambda b=bssid: self._remove_ap_pin(b))
+                rm_btn.grid(row=0, column=2, sticky="e", padx=2)
+
+            # Click anywhere on the row to arm this BSSID
+            for widget in (row, armed_lbl, name_lbl):
+                widget.bind("<Button-1>",
+                    lambda e, b=bssid: self._select_ap_for_pin(b))
+
+    def _select_ap_for_pin(self, bssid: str):
+        """Arm a BSSID for placement — next canvas click drops its pin there."""
+        self._dragging_bssid = bssid
+        if not self._ap_drag_mode:
+            self._ap_drag_mode = True
+            self.place_ap_btn.config(bg=ACCENT2, fg='black',
+                                     text="◆  Placing APs  (click to cancel)")
+        ssid = self.session.get_ssid(bssid)
+        self._set_status(
+            f"Click the location of  {ssid}  on the map.  "
+            "Right-click an existing ◆ to remove it.")
+        self.canvas_widget.get_tk_widget().config(cursor="crosshair")
+        self._update_ap_positions_panel(highlight=bssid)
+
+    def _remove_ap_pin(self, bssid: str):
+        """Remove a single AP pin."""
+        if bssid in self.session.ap_positions:
+            self.session.ap_positions.pop(bssid)
+            if self._dragging_bssid == bssid:
+                self._dragging_bssid = None
+            ssid = self.session.get_ssid(bssid)
+            self._set_status(f"◆ Removed pin for {ssid}")
+            self._update_ap_positions_panel()
+            self._redraw()
 
     def _refresh_scan(self):
         if self.scanning: return
@@ -866,11 +987,89 @@ class WiFiHeatmapApp:
         self._set_status("✓ Scan done — click your position on the map")
         self.canvas_widget.get_tk_widget().config(cursor="crosshair")
 
+    def _undo_last(self):
+        if not self.session.measurements: return
+        self.session.remove_measurement(len(self.session.measurements) - 1)
+        self._set_status("Last measurement removed")
+        self._refresh_everything()
+
+    def _delete_measurement(self):
+        sel = self.meas_listbox.curselection()
+        if not sel: return
+        idx = sel[0]
+        self.session.remove_measurement(idx)
+        self._refresh_everything()
+        self._set_status(f"Measurement {idx + 1} deleted")
+
+    # ── AP position drag-and-drop ──────────────────────────────────────────────
+
+    def _toggle_ap_drag_mode(self):
+        """Toggle AP placement mode on/off."""
+        self._ap_drag_mode = not self._ap_drag_mode
+        if self._ap_drag_mode:
+            self.place_ap_btn.config(bg=ACCENT2, fg='black')
+            self._set_status(
+                "◆ Place APs mode — click an AP in the list, then click its location on the map. "
+                "Right-click an existing pin to remove it.")
+            self.canvas_widget.get_tk_widget().config(cursor="crosshair")
+            # Highlight the active_bssid_listbox so user knows to click there first
+            self.active_bssid_listbox.config(highlightthickness=2,
+                                              highlightcolor=ACCENT2,
+                                              highlightbackground=ACCENT2)
+        else:
+            self._ap_drag_mode = False
+            self._dragging_bssid = None
+            self.place_ap_btn.config(bg=BG2, fg=ACCENT2)
+            self._set_status("Ready")
+            self.canvas_widget.get_tk_widget().config(cursor="")
+            self.active_bssid_listbox.config(highlightthickness=0)
+
+    def _get_selected_listbox_bssid(self) -> Optional[str]:
+        """Return the BSSID currently selected in the active networks listbox."""
+        sel = self.active_bssid_listbox.curselection()
+        if not sel:
+            return None
+        idx = sel[0]
+        bssids = self.selected_bssids_for_heatmap
+        if idx < len(bssids):
+            return bssids[idx]
+        return None
+
     def _on_canvas_click(self, event):
+        """Handles both placement-mode measurement recording and AP pin dropping."""
         if event.inaxes != self.ax: return
-        if not self._placement_mode or not self._pending_scan: return
         x, y = event.xdata, event.ydata
         if x is None or y is None: return
+
+        # ── Right-click: remove AP pin under cursor ────────────────────────────
+        if event.button == 3 and self._ap_drag_mode:
+            hit_radius = max(self.session.canvas_width,
+                             self.session.canvas_height) * 0.025
+            for bssid, (px, py) in list(self.session.ap_positions.items()):
+                if abs(px - x) < hit_radius and abs(py - y) < hit_radius:
+                    del self.session.ap_positions[bssid]
+                    ssid = self.session.get_ssid(bssid)
+                    self._set_status(f"Removed pin for {ssid}")
+                    self._redraw()
+                    return
+            return
+
+        # ── AP drag mode: left-click drops the selected AP ─────────────────────
+        if self._ap_drag_mode and event.button == 1:
+            bssid = self._dragging_bssid
+            if not bssid:
+                self._set_status("⚠ Click a network in the AP Positions panel first, then click its location.")
+                return
+            self.session.ap_positions[bssid] = (x, y)
+            ssid = self.session.get_ssid(bssid)
+            self._dragging_bssid = None
+            self._set_status(f"◆ Pinned {ssid} at ({int(x)}, {int(y)})  —  right-click pin to remove")
+            self._update_ap_positions_panel()
+            self._redraw()
+            return
+
+        # ── Normal measurement placement ───────────────────────────────────────
+        if not self._placement_mode or not self._pending_scan: return
 
         signals  = {ap.bssid: ap.signal_dbm for ap in self._pending_scan}
         ssid_map = {ap.bssid: ap.ssid       for ap in self._pending_scan}
@@ -886,19 +1085,61 @@ class WiFiHeatmapApp:
         self._set_status(f"✓ Point #{n} recorded at ({int(x)}, {int(y)})")
         self._refresh_everything()
 
-    def _undo_last(self):
-        if not self.session.measurements: return
-        self.session.remove_measurement(len(self.session.measurements) - 1)
-        self._set_status("Last measurement removed")
-        self._refresh_everything()
+    def _on_canvas_motion(self, event):
+        """Show a ghost diamond following the cursor in AP drag mode."""
+        if not self._ap_drag_mode: return
+        if event.inaxes != self.ax: return
+        if event.xdata is None or event.ydata is None: return
 
-    def _delete_measurement(self):
-        sel = self.meas_listbox.curselection()
-        if not sel: return
-        idx = sel[0]
-        self.session.remove_measurement(idx)
-        self._refresh_everything()
-        self._set_status(f"Measurement {idx + 1} deleted")
+        bssid = self._dragging_bssid
+        if not bssid: return
+
+        # Draw a ghost diamond at cursor position — redraw is expensive so we
+        # use blit-safe artists: remove the old ghost and add a new one.
+        if self._drag_ghost:
+            try:
+                self._drag_ghost.remove()
+            except Exception:
+                pass
+            self._drag_ghost = None
+
+        import matplotlib.patches as mpatches
+        import matplotlib.path as mpath
+
+        w  = self.session.canvas_width
+        h  = self.session.canvas_height
+        r  = max(w, h) * 0.012 * 1.6
+        px, py = event.xdata, event.ydata
+
+        verts = [(px, py-r), (px+r, py), (px, py+r), (px-r, py), (px, py-r)]
+        codes = [mpath.Path.MOVETO, mpath.Path.LINETO, mpath.Path.LINETO,
+                 mpath.Path.LINETO, mpath.Path.CLOSEPOLY]
+        self._drag_ghost = mpatches.PathPatch(
+            mpath.Path(verts, codes),
+            facecolor=ACCENT2, edgecolor='white',
+            linewidth=1.5, zorder=10, alpha=0.6
+        )
+        self.ax.add_patch(self._drag_ghost)
+        self.canvas_widget.draw_idle()
+
+    def _on_canvas_release(self, event):
+        """Clean up ghost on mouse release (no action needed — drop is on click)."""
+        if self._drag_ghost:
+            try:
+                self._drag_ghost.remove()
+            except Exception:
+                pass
+            self._drag_ghost = None
+        if self._ap_drag_mode:
+            self.canvas_widget.draw_idle()
+
+    def _clear_ap_positions(self):
+        """Remove all AP position pins from the session."""
+        if not self.session.ap_positions: return
+        if messagebox.askyesno("Clear AP Pins", "Remove all AP position pins?"):
+            self.session.ap_positions.clear()
+            self._set_status("All AP pins cleared")
+            self._redraw()
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
@@ -962,6 +1203,9 @@ class WiFiHeatmapApp:
         self.session_path = None
         self.selected_bssids_for_heatmap = []
         self._ap_stats.clear()
+        self._ap_drag_mode = False
+        self._dragging_bssid = None
+        self.place_ap_btn.config(bg=BG2, fg=ACCENT2)
         self._refresh_everything()
         self._set_status("New session started")
 
@@ -1038,6 +1282,7 @@ class WiFiHeatmapApp:
         self._update_session_info()
         self._update_floorplan_label()
         self._update_heatmap_ap_selector()
+        self._update_ap_positions_panel()
         self._redraw()
 
     def _update_measurements_list(self):

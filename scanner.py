@@ -293,9 +293,16 @@ def _wlanapi_enumerate_and_scan(wlan, handle) -> list[AccessPoint]:
                     ("InterfaceInfo",    WLAN_INTERFACE_INFO * 64)]
 
     # ── WLAN_BSS_ENTRY ────────────────────────────────────────────────────────
+    # DOT11_SSID is { ULONG uSSIDLength; UCHAR ucSSID[32]; } = 36 bytes.
+    # It must NOT be packed as c_ubyte*33 — uSSIDLength is a 4-byte ULONG,
+    # not a single byte, so the SSID data starts at offset 4, not offset 1.
+    class DOT11_SSID(ctypes.Structure):
+        _fields_ = [("uSSIDLength", wt.ULONG),
+                    ("ucSSID",      ctypes.c_ubyte * 32)]
+
     class WLAN_BSS_ENTRY(ctypes.Structure):
         _fields_ = [
-            ("dot11Ssid",           ctypes.c_ubyte * 33),  # DOT11_SSID (length + ucSSID)
+            ("dot11Ssid",           DOT11_SSID),
             ("uPhyId",              wt.ULONG),
             ("dot11Bssid",          ctypes.c_ubyte * 6),
             ("dot11BssType",        wt.DWORD),
@@ -357,9 +364,10 @@ def _wlanapi_enumerate_and_scan(wlan, handle) -> list[AccessPoint]:
         for j in range(bss_list.dwNumberOfItems):
             entry = bss_list.wlanBssEntries[j]
 
-            # Decode SSID (first byte = length in DOT11_SSID)
-            ssid_len  = entry.dot11Ssid[0]
-            ssid_bytes = bytes(entry.dot11Ssid[1:1 + ssid_len])
+            # Decode SSID using the correct DOT11_SSID field layout:
+            # uSSIDLength is the number of valid bytes in ucSSID (max 32).
+            ssid_len   = entry.dot11Ssid.uSSIDLength
+            ssid_bytes = bytes(entry.dot11Ssid.ucSSID[:ssid_len])
             try:
                 ssid = ssid_bytes.decode("utf-8", errors="replace").strip("\x00")
             except Exception:
