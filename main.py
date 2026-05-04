@@ -1,5 +1,5 @@
 """
-main.py — WiFi Heatmap Generator GUI
+main.py — pyFi WiFi Heatmap Generator GUI
 Cross-platform tkinter application for collecting and visualizing WiFi signal data.
 
 Usage:
@@ -109,7 +109,7 @@ AP_COLUMNS = [
 class WiFiHeatmapApp:
     def __init__(self, root: tk.Tk, initial_session: Optional[str] = None):
         self.root = root
-        self.root.title("WiFi Heatmap Generator")
+        self.root.title("pyFi")
         self.root.configure(bg=BG)
         self.root.minsize(1200, 720)
 
@@ -183,8 +183,20 @@ class WiFiHeatmapApp:
     def _build_sidebar(self):
         f = self.sidebar
 
-        tk.Label(f, text="📡", font=("Segoe UI Emoji", 28), bg=BG2, fg=ACCENT).pack(pady=(20, 4))
-        tk.Label(f, text="WiFi Heatmap", font=("Georgia", 13, "bold"), bg=BG2, fg=TEXT).pack()
+        # Logo image — load pyfi-mini.png, fall back to emoji if file is missing
+        try:
+            _logo_img = tk.PhotoImage(file=os.path.join(
+                os.path.dirname(__file__), "extras", "pyfi-mini.png"))
+            # Scale down if the image is large (PhotoImage subsample keeps it crisp)
+            _logo_img = _logo_img.subsample(
+                max(1, _logo_img.width() // 48),
+                max(1, _logo_img.height() // 48))
+            tk.Label(f, image=_logo_img, bg=BG2).pack(pady=(20, 4))
+            f._logo_img_ref = _logo_img   # prevent garbage collection
+        except Exception:
+            tk.Label(f, text="📡", font=("Segoe UI Emoji", 28), bg=BG2, fg=ACCENT).pack(pady=(20, 4))
+
+        tk.Label(f, text="pyFi", font=("Georgia", 13, "bold"), bg=BG2, fg=TEXT).pack()
         tk.Label(f, text="Generator",    font=("Georgia", 11),          bg=BG2, fg=TEXT_DIM).pack(pady=(0, 16))
 
         ttk.Separator(f, orient="horizontal").pack(fill="x", padx=12, pady=4)
@@ -1330,16 +1342,23 @@ class WiFiHeatmapApp:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="WiFi Heatmap Generator")
+    parser = argparse.ArgumentParser(description="pyFi — WiFi Heatmap Generator")
     parser.add_argument("--session", help="Path to a .json session file to load on startup")
     args = parser.parse_args()
 
     root = tk.Tk()
-    root.title("WiFi Heatmap Generator")
+    root.title("pyFi")
+
+    # Set taskbar / window icon
+    _icon_path = os.path.join(os.path.dirname(__file__), "extras", "pyfi-logo.ico")
     try:
-        root.iconbitmap(default="")
+        root.iconbitmap(default=_icon_path)
     except Exception:
-        pass
+        try:
+            _icon_img = tk.PhotoImage(file=_icon_path)
+            root.iconphoto(True, _icon_img)
+        except Exception:
+            pass   # icon is cosmetic — silently skip if unavailable
 
     WiFiHeatmapApp(root, initial_session=args.session)
     root.protocol("WM_DELETE_WINDOW", lambda: (root.destroy()))
