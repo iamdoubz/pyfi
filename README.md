@@ -59,17 +59,18 @@ The application has two tabs and a persistent left sidebar.
   <img src="extras/page-accesspoints.png" alt="An image of the wifi heatmap generator page 1 titled Access Points that shows discovered SSID and BSSID network information">
 </p>
 
-The first tab you see on launch. Shows a scrollable table of every access point
-ever discovered during the session — including those that have gone out of range,
-which remain in the list permanently and are shown dimmed with an "out of range"
-indicator in the Level column.
+The first tab you see on launch. Shows a scrollable table (horizontal and
+vertical) of every access point ever discovered during the session — including
+those that have gone out of range, which remain in the list permanently and are
+shown dimmed with an "out of range" indicator in the Level column. Column
+headers are pixel-exact aligned to their data columns.
 
 **Table columns:**
 
 | Column | Description |
 |---|---|
 | ✓ | Checkbox to include this BSSID in heatmap rendering |
-| SSID | Network name |
+| SSID | Network name (full name, never truncated) |
 | BSSID | Hardware MAC address — unique per physical radio |
 | Ch | 802.11 channel number |
 | Frequency | Centre frequency in MHz |
@@ -84,18 +85,19 @@ indicator in the Level column.
 | Min | Weakest signal ever recorded |
 | Avg | Running average of all valid readings |
 
+The Max, Min, and Avg columns accumulate across the entire session lifetime and
+are cleared only when starting a new session. Max is tinted green, Min red, and
+Avg is color-coded dynamically by signal quality.
+
 **Toolbar controls:**
 
 - **🔄 Refresh Scan** — Trigger a manual scan immediately.
 - **☑ Select All / ☐ Deselect All** — Check or uncheck all rows for heatmap use.
 - **Auto-scan** — Enable automatic periodic scanning. The interval is
   user-configurable via a spinbox (minimum 3 seconds, default 10 seconds,
-  maximum 300 seconds). A live countdown shows time until the next scan.
+  maximum 300 seconds). A live countdown label shows time until the next scan.
   While auto-scan is active the manual Refresh button is disabled to prevent
-  scan conflicts.
-
-The table scrolls both horizontally and vertically. Column headers are
-pixel-exact aligned to their data columns.
+  scan conflicts. Changing the interval mid-countdown restarts the timer.
 
 ### Tab 2 — Heatmap
 
@@ -103,7 +105,14 @@ pixel-exact aligned to their data columns.
   <img src="extras/page-heatmap.png" alt="An image of the wifi heatmap generator page 2 titled Heatmap showing a datagrid of measurements and active networks">
 </p>
 
-The heatmap canvas with measurement tools.
+The heatmap canvas with measurement and AP placement tools.
+
+**Toolbar controls:**
+
+- **▶ Scan & Place** — Scan WiFi and enter placement mode; click your location on the canvas.
+- **↩ Undo** — Remove the most recently recorded measurement point.
+- **◆ Place APs** — Toggle AP placement mode (see AP Positions below).
+- **✕ Clear AP Pins** — Remove all AP position pins from the session.
 
 **Active Networks panel (right side):**
 
@@ -119,27 +128,51 @@ AP tab checkboxes are the sole selector.
 
 A mode label shows either "Mode: single BSSID" or "Mode: averaging N BSSIDs".
 
+**AP Positions panel (right side):**
+
+Shows one row per active BSSID. Each row displays:
+- A status indicator: ○ (not pinned), ◆ (pinned), or ▶ (armed for placement)
+- The SSID and current pin coordinates (if placed)
+- An ✕ remove button when pinned
+
+To place an AP:
+1. Click **◆ Place APs** in the toolbar to enter placement mode.
+2. Click a network row in the AP Positions panel to arm it (▶ indicator appears).
+3. Click the AP's physical location on the canvas — a ◆ diamond marker appears.
+4. Repeat for each AP. Right-click an existing ◆ marker to remove it.
+
+Placing APs is optional but improves heatmap accuracy — see *AP Positioning* below.
+
 **Measurements panel (right side, full height):**
 
 A scrollable list of every recorded measurement point showing its canvas
 coordinates and how many APs were visible at that location. Individual
 measurements can be deleted by selecting them and clicking 🗑 Delete Selected.
-The Undo button removes the most recent point.
 
-**Heatmap rendering:**
+**Heatmap rendering (Ekahau-style):**
 
+- The colormap runs **red** (strongest, ≥ -30 dBm) → orange → yellow → green →
+  teal → blue → **violet** (weakest, ≤ -90 dBm), matching professional site
+  survey tools. Strong signal zones are warm colors; weak zones are cool.
+- The alpha channel is derived per-pixel from signal strength — strong zones are
+  opaque and weak/absent zones fade to transparent, revealing the floorplan
+  beneath. This produces the characteristic "bubble" zone appearance.
+- A Gaussian blur is applied to zone edges so overlapping coverage areas blend
+  smoothly rather than showing hard triangulation boundaries.
 - The heatmap is not drawn until at least **4 measurement points** are collected
-  for the selected BSSID(s). Until then a progress indicator shows how many
-  points have been collected and how many more are needed.
-- Colored dots mark each valid measurement point, labeled with the dBm value.
+  for the selected BSSID(s). Until then a progress indicator shows how many more
+  are needed.
+- **Colored dots** (circles) mark each valid measurement point, labeled with the dBm value.
 - **Black dots with a `?`** mark measurement points where none of the selected
   BSSIDs were visible — the user was there and scanned, but that radio had no
   coverage at that location.
-- The colorbar runs from black (no signal / not found) at the bottom through
-  navy → blue → cyan → green → yellow → orange → red (excellent) at the top.
-  A "No signal" label appears below the scale.
+- **◆ Diamond markers** with WiFi arc icons mark AP physical positions when
+  pinned. These are visually distinct from measurement dots and show the SSID
+  label beneath the icon.
+- The colorbar runs from black (no signal) at the bottom to red (excellent) at
+  the top. A "No signal" label appears below the scale.
 - When no floorplan is loaded, a subtle coordinate grid is drawn instead, and
-  a warning note appears in the heatmap subtitle.
+  a warning note appears in the heatmap subtitle and export.
 
 ---
 
@@ -153,17 +186,34 @@ The Undo button removes the most recent point.
    real spatial context and produces a significantly more accurate heatmap.
 4. Switch to the **Heatmap** tab. The Active Networks panel shows your selected
    BSSIDs and the current mode (single or averaged).
-5. Walk to a location in your space and click **▶ Scan & Place**. The app
+5. *(Optional)* Pin your AP locations using **◆ Place APs** — see *AP Positioning*.
+6. Walk to a location in your space and click **▶ Scan & Place**. The app
    scans WiFi (10 samples, 100 ms apart, median reported) and enters placement
    mode. Click your current position on the canvas.
-6. Repeat from step 5. Aim for **at least 15–20 measurement points** for a
+7. Repeat from step 6. Aim for **at least 15–20 measurement points** for a
    good interpolation. Prioritize:
    - Locations very close to each router (expect -30 to -45 dBm)
    - Far corners and edges of the space (expect -65 to -80 dBm)
    - Both sides of walls and doorways
    - Any spot you suspect has poor coverage
-7. The heatmap auto-updates after each new point once the 4-point minimum is met.
-8. Use **Export PNG** to save the result, or **Save Session** to continue later.
+8. The heatmap auto-updates after each new point once the 4-point minimum is met.
+9. Use **Export PNG** to save the result, or **Save Session** to continue later.
+
+### AP Positioning
+
+When you pin an AP's physical location on the canvas, the renderer injects a
+synthetic anchor point at that position into the interpolation. The anchor value
+is the strongest real measurement seen for that BSSID plus 5 dBm (capped at
+-25 dBm), representing the expected near-field signal directly at the
+transmitter.
+
+Without an anchor, the interpolator estimates the signal peak from surrounding
+measurement points, which can place it in the wrong location — especially in a
+mesh system where measurement density may not be uniform. With an anchor, the
+heatmap peak is correctly located at the physical AP, and coverage zones radiate
+outward from the right origin.
+
+AP positions are saved in the session file and restored on load.
 
 ### Mapping a mesh network accurately
 
@@ -178,6 +228,9 @@ multiple radios broadcast the same SSID:
   checked, the multi-BSSID averaging mode will produce a combined coverage map.
 - For the most accurate single-radio map, consider temporarily disabling the
   other nodes in your mesh system's admin panel during the session.
+- Pinning each node's physical location with **◆ Place APs** is especially
+  useful for mesh systems — it anchors each radio's peak independently so the
+  averaged multi-BSSID map correctly reflects all three coverage zones.
 
 ---
 
@@ -205,6 +258,10 @@ field from the BSS entry struct in hardware dBm with no clamping or rounding.
 This can reveal 8–15 dBm of real variation that `netsh` completely hides.
 `WlanScan()` is also called first to request a fresh radio sweep rather than
 reading the OS scan cache (which can be 30–60 seconds stale).
+
+The `DOT11_SSID` struct is read using the correct SDK layout (`uSSIDLength` as
+a 4-byte ULONG + `ucSSID[32]`), ensuring SSIDs are never truncated regardless
+of length.
 
 **Linux — `iw` vs `nmcli`:**
 
@@ -260,7 +317,9 @@ per BSSID across the entire session.
 
 ## Interpolation
 
-Signal values between measurement points are interpolated using scipy:
+Signal values between measurement points are interpolated using scipy. When AP
+positions are pinned, synthetic anchor points are injected at the transmitter
+locations before interpolation runs.
 
 | Points collected | Method used |
 |---|---|
@@ -281,8 +340,8 @@ entire canvas is always covered.
 |---|---|---|
 | -30 to -50 | Excellent | Red → Orange → Yellow |
 | -50 to -65 | Good | Yellow → Green |
-| -65 to -75 | Fair | Green → Cyan |
-| -75 to -90 | Poor | Cyan → Blue → Navy |
+| -65 to -75 | Fair | Green → Teal |
+| -75 to -90 | Poor | Teal → Blue → Violet |
 | Not found | No signal | Black dot (●) on map |
 
 ---
@@ -290,15 +349,17 @@ entire canvas is always covered.
 ## Session Files
 
 Sessions are saved as `.json` files containing all measurement points, signal
-readings for every visible BSSID at each point, SSID mappings, the floorplan
-path, and canvas dimensions. Sessions can be loaded at startup:
+readings for every visible BSSID at each point, SSID mappings, AP position
+pins, the floorplan path, and canvas dimensions. Sessions can be loaded at startup:
 
 ```bash
 python main.py --session my_office.json
 ```
 
-Measurements can be deleted individually from the Heatmap tab. The session is
-not auto-saved — use **💾 Save Session** or **💾 Save As…** from the sidebar.
+Measurements can be deleted individually from the Heatmap tab. AP pins can be
+removed individually from the AP Positions panel or all at once via
+**✕ Clear AP Pins**. The session is not auto-saved — use **💾 Save Session**
+or **💾 Save As…** from the sidebar.
 
 ---
 
@@ -318,11 +379,11 @@ not auto-saved — use **💾 Save Session** or **💾 Save As…** from the sid
 
 | File | Purpose |
 |---|---|
-| `main.py` | Tkinter GUI — two-tab layout (Access Points + Heatmap), sidebar, auto-scan engine, AP stats tracking |
-| `scanner.py` | Cross-platform WiFi scanning with `wlanapi` / `iw` / `nmcli` / `airport` backends, median averaging |
+| `main.py` | Tkinter GUI — two-tab layout (Access Points + Heatmap), sidebar, auto-scan engine, AP stats tracking, AP placement drag-and-drop |
+| `scanner.py` | Cross-platform WiFi scanning with `wlanapi` / `iw` / `nmcli` / `airport` backends, median averaging, correct DOT11_SSID struct |
 | `interpolator.py` | Spatial interpolation — auto-selects RBF, cubic, or linear based on point count |
-| `renderer.py` | Matplotlib heatmap rendering — colorbar, measurement dots, missing-signal black dots |
-| `data.py` | Session model — measurements, multi-BSSID averaging, missing-point detection, JSON persistence |
+| `renderer.py` | Ekahau-style RGBA heatmap rendering — signal-driven alpha, Gaussian zone blending, AP diamond markers, colorbar |
+| `data.py` | Session model — measurements, multi-BSSID averaging, missing-point detection, AP position anchoring, JSON persistence |
 | `requirements.txt` | Python dependencies (`numpy`, `scipy`, `matplotlib`, `Pillow`) |
 
 ---

@@ -30,6 +30,10 @@ class Session:
     canvas_width: int = 800
     canvas_height: int = 600
     measurements: list[Measurement] = field(default_factory=list)
+    # Physical positions of access points on the canvas, keyed by BSSID.
+    # Optional — when set, the renderer uses these as anchor points to pin the
+    # interpolation peak to the real transmitter location.
+    ap_positions: dict[str, tuple[float, float]] = field(default_factory=dict)
     created_at: str = ""
     updated_at: str = ""
 
@@ -106,6 +110,32 @@ class Session:
                 missing.append((m.x, m.y))
         return missing
 
+    def get_anchor_points(self, bssids: list[str]) -> tuple[list, list]:
+        """
+        Return synthetic (x, y) anchor points and estimated dBm values for any
+        BSSID in `bssids` that has a known physical position in ap_positions.
+
+        The anchor value is the strongest real measurement seen for that BSSID
+        plus 5 dBm (capped at -25 dBm), representing the expected near-field
+        signal directly at the transmitter.  These points are injected into the
+        interpolation so the heatmap peak is correctly anchored to the AP's
+        physical location rather than estimated from surrounding measurements.
+        """
+        points, values = [], []
+        for bssid in bssids:
+            if bssid not in self.ap_positions:
+                continue
+            pos = self.ap_positions[bssid]
+            # Find the strongest real reading for this BSSID
+            real_pts, real_vals = self.get_points_and_values(bssid)
+            if real_vals:
+                anchor_dbm = min(-25, max(real_vals) + 5)
+            else:
+                anchor_dbm = -35   # reasonable default when no measurements exist yet
+            points.append(pos)
+            values.append(float(anchor_dbm))
+        return points, values
+
     def save(self, path: str):
         """Save session to JSON file."""
         data = {
@@ -115,6 +145,8 @@ class Session:
             "canvas_height": self.canvas_height,
             "created_at": self.created_at,
             "updated_at": datetime.now().isoformat(),
+            # Serialize ap_positions as {bssid: [x, y]} for JSON compatibility
+            "ap_positions": {b: list(pos) for b, pos in self.ap_positions.items()},
             "measurements": [
                 {
                     "x": m.x,
@@ -143,6 +175,9 @@ class Session:
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", "")
         )
+        # Restore AP positions — stored as {bssid: [x, y]}, convert to tuples
+        for bssid, pos in data.get("ap_positions", {}).items():
+            session.ap_positions[bssid] = (float(pos[0]), float(pos[1]))
         for m in data.get("measurements", []):
             session.measurements.append(Measurement(
                 x=m["x"],
