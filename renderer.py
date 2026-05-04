@@ -142,12 +142,15 @@ def render_heatmap(
 
         rgba = _build_ekahau_rgba(grid, alpha)
 
-        _sm = ax.imshow(
-            grid,
-            extent=[0, w, 0, h], origin='upper',
-            cmap=SIGNAL_CMAP, vmin=VMIN, vmax=VMAX,
-            alpha=0, zorder=0, aspect='auto'
-        )
+        # Use a standalone ScalarMappable to drive the colorbar.
+        # The hidden alpha=0 imshow blanks the colorbar on many backends
+        # because matplotlib treats a fully-transparent mappable as having
+        # no drawable content. A detached ScalarMappable with norm and cmap
+        # set explicitly is always rendered correctly.
+        _sm = plt.cm.ScalarMappable(
+            cmap=SIGNAL_CMAP,
+            norm=mcolors.Normalize(vmin=VMIN, vmax=VMAX))
+        _sm.set_array([])   # required by matplotlib even when supplying no data
 
         ax.imshow(
             rgba,
