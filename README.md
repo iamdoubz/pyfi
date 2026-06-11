@@ -27,6 +27,11 @@ Dependencies: `numpy`, `scipy`, `matplotlib`, `Pillow`
 No third-party WiFi libraries are required. The scanner uses native OS APIs
 directly (`wlanapi` on Windows, `iw` / `nmcli` on Linux, `airport` on macOS).
 
+On the first scan the vendor lookup downloads the IEEE OUI registry (~37,000
+entries) to `~/.pyfi/oui.csv` and refreshes it every 30 days. This is the only
+network access pyFi makes; if it's offline a small built-in vendor table is
+used as a fallback.
+
 ---
 
 ## 📖 Usage 📖
@@ -76,9 +81,9 @@ headers are pixel-exact aligned to their data columns.
 | Frequency | Centre frequency in MHz |
 | Ch Width | Channel width (20 / 40 / 80 / 160 / 320 MHz) |
 | Band | 2.4, 5, or 6 GHz |
-| Security | WPA3-Personal, WPA2-Personal, WPA2-Enterprise, WPA-Personal, WEP, Open |
-| Vendor | Manufacturer derived from BSSID OUI prefix (~100 vendors recognized) |
-| Mode | 802.11 mode: ax (Wi-Fi 6), ac (Wi-Fi 5), n (Wi-Fi 4), g, a, b |
+| Security | WPA3-Personal, WPA2/WPA3-Personal, WPA2-Personal, WPA3/WPA2-Enterprise, WPA-Personal, OWE (Enhanced Open), WEP, Open |
+| Vendor | Manufacturer from the full IEEE OUI registry (~37,000 entries); randomized BSSIDs show "Local" |
+| Mode | 802.11 mode: be (Wi-Fi 7), ax (Wi-Fi 6E), ax (Wi-Fi 6), ac (Wi-Fi 5), n (Wi-Fi 4), g, a, b |
 | Level | Color-coded signal bar (green ≥ -50, yellow -50–-65, orange -65–-75, red < -75) |
 | Last Seen | How long ago this BSSID was last visible (updates each scan) |
 | Max | Strongest signal ever recorded for this BSSID across all scans |
@@ -98,6 +103,9 @@ Avg is color-coded dynamically by signal quality.
   maximum 300 seconds). A live countdown label shows time until the next scan.
   While auto-scan is active the manual Refresh button is disabled to prevent
   scan conflicts. Changing the interval mid-countdown restarts the timer.
+- **Show Hidden** — Off by default. When unchecked, networks broadcasting no
+  SSID (shown as `<hidden>`) are filtered out of the table; check it to reveal
+  them. Toggling rebuilds the table instantly without rescanning.
 
 ### Tab 2 — Heatmap
 
@@ -263,6 +271,15 @@ The `DOT11_SSID` struct is read using the correct SDK layout (`uSSIDLength` as
 a 4-byte ULONG + `ucSSID[32]`), ensuring SSIDs are never truncated regardless
 of length.
 
+Mode, security, and channel width are parsed from each BSS entry's raw beacon
+Information Elements rather than the scan list's summary fields, which
+under-report. In particular, Windows' `dot11BssPhyType` caps at HE and never
+reports EHT, so **Wi-Fi 7 (802.11be) is detected from the EHT Capabilities
+element**, channel width (including 320 MHz) from the EHT/HE/VHT/HT Operation
+elements, and security — including for hidden networks that have no SSID to
+look up — from the RSN element. Reading these requires a byte-exact
+`WLAN_BSS_ENTRY` struct so the IE offset is correct.
+
 **Linux — `iw` vs `nmcli`:**
 
 `nmcli` reads from NetworkManager's internal scan cache and applies its own
@@ -270,7 +287,7 @@ signal smoothing. `iw dev <iface> scan` calls the kernel's `nl80211` layer
 directly via netlink, forcing a live hardware scan and returning signal in mBm
 (millibelsmilliwatt) at 0.1 dBm precision, e.g. -6500 = -65.0 dBm. It also
 returns raw Information Elements (IEs) from the beacon frame, enabling accurate
-detection of HE / VHT / HT capabilities for the Mode column.
+detection of EHT / HE / VHT / HT capabilities for the Mode column.
 
 ### Linux permissions for `iw`
 
@@ -380,7 +397,7 @@ or **💾 Save As…** from the sidebar.
 | File | Purpose |
 |---|---|
 | `main.py` | Tkinter GUI — two-tab layout (Access Points + Heatmap), sidebar, auto-scan engine, AP stats tracking, AP placement drag-and-drop |
-| `scanner.py` | Cross-platform WiFi scanning with `wlanapi` / `iw` / `nmcli` / `airport` backends, median averaging, correct DOT11_SSID struct |
+| `scanner.py` | Cross-platform WiFi scanning with `wlanapi` / `iw` / `nmcli` / `airport` backends, median averaging, beacon-IE parsing for mode/security/width (Wi-Fi 4–7), full IEEE OUI vendor lookup |
 | `interpolator.py` | Spatial interpolation — auto-selects RBF, cubic, or linear based on point count |
 | `renderer.py` | Ekahau-style RGBA heatmap rendering — signal-driven alpha, Gaussian zone blending, AP diamond markers, colorbar |
 | `data.py` | Session model — measurements, multi-BSSID averaging, missing-point detection, AP position anchoring, JSON persistence |
