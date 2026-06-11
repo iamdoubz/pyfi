@@ -322,6 +322,18 @@ class WiFiHeatmapApp:
         tk.Label(auto_bar, text="seconds",
                  font=("Courier", 8), bg=BG3, fg=TEXT_DIM).pack(side="left", padx=(2, 16))
 
+        # Show Hidden toggle — when unchecked, networks with no SSID ("<hidden>")
+        # are filtered out of the table. Defaults to unchecked.
+        self._show_hidden_var = tk.BooleanVar(value=False)
+        self.show_hidden_chk = tk.Checkbutton(
+            auto_bar, variable=self._show_hidden_var,
+            text="Show Hidden", font=("Courier", 8),
+            bg=BG3, fg=ACCENT2, selectcolor=BG2,
+            activebackground=BG3, activeforeground=ACCENT2,
+            relief="flat", cursor="hand2",
+            command=self._on_show_hidden_toggle)
+        self.show_hidden_chk.pack(side="left", padx=(0, 16))
+
         self.auto_scan_countdown = tk.Label(auto_bar, text="",
             font=("Courier", 8, "bold"), bg=BG3, fg=WARNING)
         self.auto_scan_countdown.pack(side="left")
@@ -448,14 +460,25 @@ class WiFiHeatmapApp:
         now         = time.monotonic()
         all_bssids  = self._known_bssids_ordered()
 
-        for i, bssid in enumerate(all_bssids):
+        show_hidden = self._show_hidden_var.get()
+        visible_idx = 0
+        for bssid in all_bssids:
             ap      = current_map.get(bssid)
             stats   = self._ap_stats.get(bssid)
             is_live = ap is not None
-            row_num = i + 1   # row 0 is the header
 
-            row_bg  = BG if i % 2 == 0 else BG2
+            # Resolve SSID early so hidden networks can be filtered before any
+            # widgets are built. Use last-known SSID from stats when AP is stale.
+            ssid = ap.ssid if ap else self._ap_stats_ssid(bssid)
+
+            # "Show Hidden" unchecked → skip networks broadcasting no SSID.
+            if not show_hidden and (not ssid or ssid == "<hidden>"):
+                continue
+
+            row_num = visible_idx + 1   # row 0 is the header
+            row_bg  = BG if visible_idx % 2 == 0 else BG2
             dim_fg  = "#3a3a5a"   # very dim — used for stale rows
+            visible_idx += 1
 
             row = tk.Frame(self.ap_inner, bg=row_bg)
             row.grid(row=row_num, column=0, sticky="ew")
@@ -479,7 +502,6 @@ class WiFiHeatmapApp:
                          anchor="w", padx=4).place(relwidth=1, relheight=1)
 
             # Resolve display values — use last-known from stats when AP is stale
-            ssid     = ap.ssid if ap else self._ap_stats_ssid(bssid)
             channel  = str(ap.channel) if ap and ap.channel else "—"
             freq     = ap.freq_label()     if ap else "—"
             width_s  = ap.channel_width or "—" if ap else "—"
@@ -577,6 +599,10 @@ class WiFiHeatmapApp:
             self.selected_bssids.discard(bssid)
         self._sync_heatmap_bssids()
         self._update_heatmap_ap_selector()
+
+    def _on_show_hidden_toggle(self):
+        """Rebuild the AP table when the Show Hidden checkbox changes."""
+        self._populate_ap_table(self.last_scan)
 
     def _ap_select_all(self):
         self.selected_bssids = {r["bssid"] for r in self._ap_row_widgets}
